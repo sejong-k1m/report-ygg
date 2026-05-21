@@ -1,0 +1,13 @@
+# Kiwoom OpenAPI+ requires 32-bit Python (3.8 or 3.9 recommended)
+# Install: pip install -r requirements.txt
+
+PyQt5==5.15.10
+pywin32==306
+requests==2.31.0
+
+# KRX direct data fetch (pension fund stock discovery, independent of Kiwoom API)
+# 32-bit Python 3.9 compatibility: pandas 2.x has no 32bit wheels -> pin to 1.5.x
+pykrx>=1.0.45
+pandas>=1.5,<2.0
+lxml>=4.9
+beautifulsoup4>=4.11

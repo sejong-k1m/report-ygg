@@ -1,0 +1,41 @@
+# 시크릿
+app_secrets.py
+secrets.py
+.env
+*.token
+data/kakao_tokens.json
+
+# 로그/DB
+logs/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 킬스위치 lock
+*.lock
+
+# 입력 CSV (개인 환경별)
+report/input/*.csv
+
+# 진단 테스트 파일
+_test_*.py
+_raw_krx_test.py
+_syntax_check.py
+
+# 빌드 산출물 — output 은 docs로 복사되므로 git에는 포함시키지 않음 (docs만 push)
+report/output/
