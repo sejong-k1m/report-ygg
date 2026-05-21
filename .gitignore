@@ -8,9 +8,12 @@ data/kakao_tokens.json
 # 로그/DB
 logs/
 *.log
-*.db
 *.sqlite
 *.sqlite3
+# Kiwoom 봇 DB 만 제외, report DB 는 GH Actions 누적용으로 추적
+data/pension_bot.db
+data/kakao_tokens.json
+# data/pension_report.db 는 git 추적 (주간 누적 데이터 유지)
 
 # Python
 __pycache__/

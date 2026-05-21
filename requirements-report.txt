@@ -1,0 +1,5 @@
+# GitHub Actions report build 전용 최소 의존성
+# (Windows 봇용 PyQt5/pywin32/pykrx 등 제외)
+requests>=2.31
+beautifulsoup4>=4.11
+lxml>=4.9
