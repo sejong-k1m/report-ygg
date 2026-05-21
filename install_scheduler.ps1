@@ -1,35 +1,33 @@
 # ============================================================
-# Windows 작업 스케줄러 등록 — 매시간 자동 빌드
+# Windows Task Scheduler registration - hourly auto build
 #
-# 사용법:
-#   PowerShell 관리자 권한 (또는 일반) 으로 실행
-#   > Set-ExecutionPolicy -Scope Process Bypass
-#   > .\install_scheduler.ps1
+# Usage:
+#   PowerShell:
+#     Set-ExecutionPolicy -Scope Process Bypass
+#     .\install_scheduler.ps1
 #
-# 두 가지 모드:
-#   1. 24시간 매시간 (기본) — 단순함, 항상 최신
-#   2. 장중(09-16시) 매시간 — 외부 사이트 부담 최소화
-#      → 아래 $marketHoursOnly 변수를 $true 로 바꾸면 됨
+# Two modes:
+#   1. 24h hourly (default)  - simplest, always fresh
+#   2. Market hours only (09-16) - set $marketHoursOnly = $true
 # ============================================================
 
-$marketHoursOnly = $false   # $true 면 09:00~16:00 만 실행 (8회/일)
+$marketHoursOnly = $false   # set $true for 09:00-16:00 only (8 times/day)
 
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BatPath = Join-Path $ScriptRoot "auto_update.bat"
-$TaskName = "연기금 일일 리포트"
+$TaskName = "PensionReportAutoUpdate"
 
 if ($marketHoursOnly) {
-    # 09:00 ~ 16:00 매시간 (8회: 09,10,11,12,13,14,15,16)
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date "09:00") `
         -RepetitionInterval (New-TimeSpan -Hours 1) `
         -RepetitionDuration (New-TimeSpan -Hours 8)
-    $modeLabel = "장중 매시간 (09-16시)"
+    $modeLabel = "market hours 09-16"
 } else {
-    # 24시간 매시간 — 가장 단순
+    # 9999 days = ~27 years (Windows scheduler can't accept TimeSpan.MaxValue)
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date "00:00") `
         -RepetitionInterval (New-TimeSpan -Hours 1) `
-        -RepetitionDuration ([TimeSpan]::MaxValue)
-    $modeLabel = "24시간 매시간"
+        -RepetitionDuration (New-TimeSpan -Days 9999)
+    $modeLabel = "24h hourly"
 }
 
 $action = New-ScheduledTaskAction -Execute $BatPath -WorkingDirectory $ScriptRoot
@@ -41,20 +39,19 @@ $settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
     -MultipleInstances IgnoreNew
 
-# 기존 작업 제거 후 재등록
 Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 Register-ScheduledTask -TaskName $TaskName -Trigger $trigger -Action $action `
     -Principal $principal -Settings $settings `
-    -Description "연기금 리포트 자동 빌드 ($modeLabel). CSV는 외부 사이트(todayygg/toss/judal)에서 자동 fetch."
+    -Description "Pension report auto build + GitHub Pages publish ($modeLabel)"
 
 Write-Host ""
 Write-Host "===========================================" -ForegroundColor Green
-Write-Host "  작업 등록 완료: $TaskName"
-Write-Host "  모드: $modeLabel"
+Write-Host "  Task registered: $TaskName"
+Write-Host "  Mode: $modeLabel"
 Write-Host "===========================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "확인:  Get-ScheduledTask -TaskName '$TaskName'"
-Write-Host "수동 실행:  Start-ScheduledTask -TaskName '$TaskName'"
-Write-Host "제거:  Unregister-ScheduledTask -TaskName '$TaskName' -Confirm:`$false"
+Write-Host "Check:   Get-ScheduledTask -TaskName '$TaskName'"
+Write-Host "Run now: Start-ScheduledTask -TaskName '$TaskName'"
+Write-Host "Remove:  Unregister-ScheduledTask -TaskName '$TaskName' -Confirm:`$false"
 Write-Host ""
-Write-Host "로그: logs\auto_update.log"
+Write-Host "Log: logs\auto_update.log + logs\publish.log"
