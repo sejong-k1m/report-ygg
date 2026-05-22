@@ -821,8 +821,22 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   .thread-nick {{ font-size: 11px; font-weight: 600; color: #2c3e50; }}
   .thread-time {{ font-size: 10px; color: #95a5a6; }}
   .thread-text {{ font-size: 12px; color: #2c3e50; white-space: pre-wrap; word-break: break-word; }}
-  .thread-text .mention {{ color: #16a085; font-weight: 600; cursor: pointer; }}
-  .thread-text .mention:hover {{ text-decoration: underline; }}
+  .thread-text .mention {{ color: #2980b9; font-weight: 600; cursor: pointer; }}
+  .thread-text .mention:hover {{ text-decoration: underline; color: #1f5f8b; }}
+  .reply-item .mention {{ color: #2980b9; font-weight: 600; cursor: pointer; }}
+  .reply-item .mention:hover {{ text-decoration: underline; }}
+  /* 종목 필터 chip */
+  .stock-filter {{
+    background: #d6eaf8; color: #1f5f8b; padding: 4px 10px;
+    border-radius: 12px; font-size: 11px; font-weight: 600;
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px;
+  }}
+  .stock-filter .clear-btn {{
+    background: transparent; border: 1px solid #2980b9; color: #2980b9;
+    padding: 2px 8px; border-radius: 8px; cursor: pointer; font-size: 10px;
+  }}
+  .stock-filter .clear-btn:hover {{ background: #2980b9; color: white; }}
   .reply-toggle {{ font-size: 10px; color: #3498db; cursor: pointer; margin-top: 4px; display: inline-block; }}
   .reply-list {{ margin-top: 6px; padding-left: 8px; border-left: 2px solid #ecf0f1; }}
   .reply-item {{ background: white; padding: 5px; border-radius: 3px; margin-bottom: 3px; font-size: 11px; }}
@@ -1060,6 +1074,8 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
     <button id="thread-submit" class="thread-submit">게시</button>
   </div>
 
+  <div id="stock-filter-container"></div>
+
   <div id="thread-list" class="thread-list">
     <div class="thread-loading">불러오는 중...</div>
   </div>
@@ -1286,19 +1302,59 @@ function attachReplyHandlers(threadEl, threadId) {{
   }});
 }}
 
-// 메인 글 listen (최신 50개)
-const tq = query(collection(db, 'threads'), orderBy('createdAt', 'desc'), limit(50));
-onSnapshot(tq, snap => {{
+// ---------- 필터링 + 글 목록 ----------
+let allThreads = [];
+let currentFilter = null;  // 활성 종목 멘션 필터
+
+const filterContainer = document.getElementById('stock-filter-container');
+
+function setStockFilter(stockName) {{
+  currentFilter = stockName;
+  if (stockName) {{
+    filterContainer.innerHTML = `
+      <div class="stock-filter">
+        <span>📌 @${{stockName.replace(/[<>]/g,'')}} 종목 글만 표시</span>
+        <button class="clear-btn" id="filter-clear">전체 보기</button>
+      </div>
+    `;
+    document.getElementById('filter-clear').addEventListener('click', () => setStockFilter(null));
+  }} else {{
+    filterContainer.innerHTML = '';
+  }}
+  renderThreadList();
+}}
+
+function renderThreadList() {{
   threadList.innerHTML = '';
-  if (snap.empty) {{
-    threadList.innerHTML = '<div class="thread-loading">아직 글이 없습니다. 첫 글을 남겨보세요.</div>';
+  const items = currentFilter
+    ? allThreads.filter(t => (t.mentions || []).includes(currentFilter))
+    : allThreads;
+  if (items.length === 0) {{
+    threadList.innerHTML = '<div class="thread-loading">'
+      + (currentFilter ? `@${{currentFilter}} 관련 글이 없습니다.` : '아직 글이 없습니다. 첫 글을 남겨보세요.')
+      + '</div>';
     return;
   }}
-  snap.forEach(d => {{
-    const el = renderThread(d.id, d.data());
+  items.forEach(t => {{
+    const el = renderThread(t.id, t);
     threadList.appendChild(el);
-    attachReplyHandlers(el, d.id);
+    attachReplyHandlers(el, t.id);
   }});
+}}
+
+// @멘션 클릭 → 필터 설정 (이벤트 위임)
+threadList.addEventListener('click', e => {{
+  const m = e.target.closest('.mention');
+  if (m && m.dataset.stock) {{
+    setStockFilter(m.dataset.stock);
+  }}
+}});
+
+const tq = query(collection(db, 'threads'), orderBy('createdAt', 'desc'), limit(100));
+onSnapshot(tq, snap => {{
+  allThreads = [];
+  snap.forEach(d => allThreads.push({{ id: d.id, ...d.data() }}));
+  renderThreadList();
 }}, err => {{
   threadList.innerHTML = '<div class="thread-loading">로드 실패: ' + err.message + '</div>';
 }});
