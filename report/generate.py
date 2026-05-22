@@ -338,6 +338,68 @@ def _table_top_rows(rows: list, key="net_amount", desc=True, n=30) -> list:
     return [r for r in sorted_rows if r.get(key, 0) != 0][:n]
 
 
+def _period_days(r: dict) -> int:
+    """todayygg period_start/end → 활발 매매 기간 일수."""
+    s = r.get("period_start_date", "")
+    e = r.get("period_end_date", "")
+    if not s or not e:
+        return 0
+    try:
+        s_d = dt.date.fromisoformat(s[:10])
+        e_d = dt.date.fromisoformat(e[:10])
+        return (e_d - s_d).days + 1
+    except Exception:
+        return 0
+
+
+def _consecutive_label(r: dict) -> str:
+    """연속 매수/매도 라벨. 예: '🔥 5일 연속매수' / '❄️ 3일 연속매도'."""
+    net = r.get("net_amount", 0)
+    days = _period_days(r)
+    sell_days = r.get("consecutive_sell_days", 0)
+    if sell_days >= 2:
+        return f"❄️ {sell_days}일 연속매도"
+    if net > 0 and days >= 2:
+        return f"🔥 {days}일 연속매수"
+    return ""
+
+
+def _ai_score(r: dict) -> float:
+    """
+    간이 AI 점수 (가중 합산):
+    - 시총비 (%) × 100  ← 시총 대비 비중 큰 매매는 강한 시그널
+    - 등락률 (%) × 2    ← 모멘텀
+    - 활발 기간 (일) × 5 ← 연속 매수면 보너스
+    - 누적 순매수 (억) × 0.01 ← 누적 매수액 보너스
+    return: float (양수 = 매수 강세, 음수 = 매도 강세)
+    """
+    score = 0.0
+    score += (r.get("net_to_cap", 0) or 0) * 100
+    score += (r.get("change_rate", 0) or 0) * 2
+    if r.get("net_amount", 0) > 0:
+        score += _period_days(r) * 5
+    cumul = (r.get("cumulative_net_amount") or 0) / 100_000_000  # 억 단위
+    score += cumul * 0.01
+    return round(score, 1)
+
+
+def _ai_score_label(score: float) -> str:
+    """점수 → 등급 라벨."""
+    if score >= 50:
+        return f'<span class="score-grade s-aplus">★★★ {score:+.1f}</span>'
+    if score >= 20:
+        return f'<span class="score-grade s-a">★★ {score:+.1f}</span>'
+    if score >= 5:
+        return f'<span class="score-grade s-b">★ {score:+.1f}</span>'
+    if score <= -50:
+        return f'<span class="score-grade s-fminus">▼▼▼ {score:+.1f}</span>'
+    if score <= -20:
+        return f'<span class="score-grade s-f">▼▼ {score:+.1f}</span>'
+    if score <= -5:
+        return f'<span class="score-grade s-d">▼ {score:+.1f}</span>'
+    return f'<span class="score-grade s-c">{score:+.1f}</span>'
+
+
 def _toss_order_url(code: str) -> str:
     """토스증권 주문 페이지 (매수/매도 둘 다 한 페이지에서 처리)."""
     return f"https://tossinvest.com/stocks/A{code}/order"
@@ -474,6 +536,12 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
             f"</div>"
         ) if close > 0 else "<div class='top5-price-na'>현재가 N/A</div>"
 
+        # 연속 매수/매도 배지 + AI 점수
+        consec = _consecutive_label(r)
+        consec_cls = "consec-buy" if "연속매수" in consec else ("consec-sell" if "연속매도" in consec else "")
+        consec_html = f"<span class='consec-badge {consec_cls}'>{consec}</span>" if consec else ""
+        score = _ai_score(r)
+        score_html = f"<span class='top5-score-inline'>AI {_ai_score_label(score)}</span>"
         return (
             f"<div class='top5-card'>"
             f"<div class='top5-rank'>{r.get('_rank', '')}</div>"
@@ -483,6 +551,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
             f"</div>"
             f"{price_html}"
             f"<div class='top5-amount {amount_cls}'>{amount_label} {_fmt_won(amount_val)}</div>"
+            f"<div class='top5-meta'>{consec_html}{score_html}</div>"
             f"<a href='{action_url}' target='_blank' class='{action_cls}'>토스 {action_label}창</a>"
             f"</div>"
         )
@@ -611,7 +680,9 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   .top5-card .top5-change.neg {{ color: #2980b9; }}    /* 하락=파랑 */
   .top5-card .top5-change.neutral {{ color: #7f8c8d; }}
   .top5-card .top5-price-na {{ font-size: 10px; color: #95a5a6; font-style: italic; }}
-  .top5-card .top5-amount {{ font-size: 13px; font-weight: 700; margin: 4px 0 5px; }}
+  .top5-card .top5-amount {{ font-size: 13px; font-weight: 700; margin: 4px 0 3px; }}
+  .top5-meta {{ display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 5px; align-items: center; }}
+  .top5-score-inline {{ font-size: 9px; color: #7f8c8d; }}
   .btn-buy-big, .btn-sell-big {{
     display: block; text-align: center; padding: 4px;
     border-radius: 3px; text-decoration: none; font-size: 10px; font-weight: 600;
@@ -648,6 +719,41 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   .filter-hint {{ font-size: 11px; color: #95a5a6; margin: 4px 0 8px; }}
   .footer {{ text-align: center; color: #95a5a6; font-size: 11px; margin-top: 24px; padding: 16px; }}
 
+  /* 섹션 표시 토글 (todayygg 스타일 chip) */
+  .layer-toggles {{
+    display: flex; gap: 6px; flex-wrap: wrap;
+    background: white; border-radius: 6px; padding: 8px 10px;
+    margin-bottom: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    font-size: 11px;
+  }}
+  .layer-toggles .lt-label {{ color: #7f8c8d; font-weight: 600; margin-right: 4px; align-self: center; }}
+  .layer-toggles label {{
+    display: inline-flex; align-items: center; gap: 3px;
+    padding: 4px 9px; background: #ecf0f1; border-radius: 14px;
+    cursor: pointer; user-select: none; transition: all 0.1s;
+  }}
+  .layer-toggles label:hover {{ background: #d6dbdf; }}
+  .layer-toggles label.active {{ background: #3498db; color: white; }}
+  .layer-toggles input {{ display: none; }}
+
+  /* 연속매수/매도 배지 */
+  .consec-badge {{
+    display: inline-block; padding: 1px 6px; font-size: 10px; font-weight: 600;
+    border-radius: 8px; margin-left: 4px; vertical-align: middle;
+  }}
+  .consec-buy {{ background: #fee; color: #c0392b; border: 1px solid #f5c6cb; }}
+  .consec-sell {{ background: #eef; color: #2980b9; border: 1px solid #b8daff; }}
+
+  /* AI 분석 점수 grade */
+  .score-grade {{ font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 8px; }}
+  .s-aplus {{ background: #c0392b; color: white; }}
+  .s-a     {{ background: #e74c3c; color: white; }}
+  .s-b     {{ background: #fadbd8; color: #c0392b; }}
+  .s-c     {{ background: #ecf0f1; color: #7f8c8d; }}
+  .s-d     {{ background: #d6eaf8; color: #2980b9; }}
+  .s-f     {{ background: #3498db; color: white; }}
+  .s-fminus{{ background: #2471a3; color: white; }}
+
   /* 카테고리 네비게이션 (실시간/마감 토글) */
   .nav-tabs {{
     display: flex; gap: 4px; background: white; border-radius: 8px;
@@ -681,9 +787,18 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
 <div class="mode-subtitle">{mode_subtitle}</div>
 {data_freshness_note}
 <div class="meta">기준일자: <b>{trade_date}</b> &nbsp;|&nbsp; 생성: {generated_at} &nbsp;|&nbsp; 출처: KRX 공개 데이터</div>
+
+<div class="layer-toggles">
+  <span class="lt-label">표시:</span>
+  <label data-sec="overview"><input type="checkbox" checked> 시장수급+Top5</label>
+  <label data-sec="weekly7"><input type="checkbox" checked> 최근 7거래일</label>
+  <label data-sec="today-top30"><input type="checkbox" checked> 오늘 Top 30</label>
+  <label data-sec="cap-top30"><input type="checkbox" checked> 시총比 Top 30</label>
+  <label data-sec="weekly-top30"><input type="checkbox" checked> 주간 누적</label>
+</div>
 {no_data_banner}
 <div class="layout-header">
-  <div class="layout-left">
+  <div class="layout-left" data-section="overview">
     <h2>오늘 시장 수급 (연기금)</h2>
     <div class="summary">
       <div class="card"><div class="label">매수 총합</div><div class="value">{_fmt_won(total_buy)}</div></div>
@@ -698,7 +813,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
     <div class="top5-wrap">{top5_sell_html}</div>
   </div>
 
-  <div class="layout-right">
+  <div class="layout-right" data-section="weekly7">
     <h2>📅 최근 7거래일 (KOSPI)</h2>
     <table>
       <thead><tr><th>일자</th><th class="num">매수</th><th class="num">매도</th><th class="num">순매수</th></tr></thead>
@@ -707,7 +822,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   </div>
 </div>
 
-<div class="grid2">
+<div class="grid2" data-section="today-top30">
   <div>
     <h2>오늘 연기금 순매수 Top 30</h2>
     <div class="filter-hint">컬럼 헤더 클릭 → 정렬</div>
@@ -744,7 +859,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   </div>
 </div>
 
-<div class="grid2">
+<div class="grid2" data-section="cap-top30">
   <div>
     <h2>시총 대비 순매수 Top 30</h2>
     <table class="sortable">
@@ -779,7 +894,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   </div>
 </div>
 
-<div class="grid2">
+<div class="grid2" data-section="weekly-top30">
   <div>
     <h2>📅 주간 누적 순매수 Top 30 (최근 7거래일)</h2>
     <table class="sortable">
@@ -817,6 +932,37 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
 </div>
 
 <script>
+// 섹션 표시 토글 (localStorage 저장)
+const LS_KEY = 'report-ygg-sections-v1';
+const sectionState = JSON.parse(localStorage.getItem(LS_KEY) || '{{}}');
+
+function applySectionState() {{
+  document.querySelectorAll('.layer-toggles label').forEach(label => {{
+    const sec = label.dataset.sec;
+    const checkbox = label.querySelector('input');
+    const visible = sectionState[sec] !== false;   // 기본 true
+    checkbox.checked = visible;
+    label.classList.toggle('active', visible);
+    document.querySelectorAll('[data-section="' + sec + '"]').forEach(el => {{
+      el.style.display = visible ? '' : 'none';
+    }});
+  }});
+}}
+
+document.querySelectorAll('.layer-toggles label').forEach(label => {{
+  label.addEventListener('click', e => {{
+    if (e.target.tagName === 'INPUT') return;  // 체크박스 직접 클릭 시 중복 방지
+    const checkbox = label.querySelector('input');
+    checkbox.checked = !checkbox.checked;
+    const sec = label.dataset.sec;
+    sectionState[sec] = checkbox.checked;
+    localStorage.setItem(LS_KEY, JSON.stringify(sectionState));
+    applySectionState();
+  }});
+}});
+
+applySectionState();
+
 // 정렬 가능한 표
 document.querySelectorAll('table.sortable th[data-sort]').forEach(th => {{
   th.addEventListener('click', () => {{
