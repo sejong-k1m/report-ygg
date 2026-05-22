@@ -2,9 +2,10 @@ name: Pension Report Auto Build
 
 on:
   schedule:
-    # GitHub Actions schedule cron은 정확히 trigger 안 됨 (peak 시간대 skip 흔함).
-    # 15분 주기 — 토스 trading-trend가 분단위 갱신이라 15분 단위면 적당.
-    - cron: '*/15 * * * *'   # every 15 minutes
+    # GitHub Actions schedule cron은 자주 skip됨 (peak 시간대 1시간+ 멈춤 흔함).
+    # 5분 주기 + 외부 ping 서비스(cron-job.org)로 안정성 확보.
+    # 변경 없으면 commit/push skip → docs 부담 없음.
+    - cron: '*/5 * * * *'    # every 5 minutes
   workflow_dispatch:   # 수동 실행 버튼
 
 permissions:

@@ -516,9 +516,9 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
                 intraday_hhmm = intraday_ts[11:16]   # "11:08"
             except Exception:
                 intraday_hhmm = ""
-        # 다음 15분 단위 시각 계산
+        # 다음 5분 단위 시각 계산
         cur_min = now.minute
-        next_min = ((cur_min // 15) + 1) * 15
+        next_min = ((cur_min // 5) + 1) * 5
         if next_min >= 60:
             next_update_at = (now.replace(minute=0, second=0, microsecond=0) + dt.timedelta(hours=1)).strftime("%H:%M")
         else:
@@ -528,13 +528,13 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
                 f"⏱ 실시간 — 토스 trading-trend <b>{intraday_hhmm}</b> KST 기준 "
                 f"· 페이지 빌드: {last_update_hhmm} "
                 f"· 다음 갱신 예정: {next_update_at} "
-                f"· 업데이트 주기: 15분"
+                f"· 업데이트 주기: 5분"
             )
         else:
             mode_subtitle = (
                 f"⏱ 실시간 — 마지막 업데이트: <b>{last_update_hhmm}</b> "
                 f"· 다음 갱신 예정: {next_update_at} "
-                f"· 업데이트 주기: 15분"
+                f"· 업데이트 주기: 5분"
             )
         data_freshness_note = ""
     else:  # closing
