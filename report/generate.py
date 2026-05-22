@@ -265,7 +265,7 @@ def query_recent_summaries(days: int = 7, market: str = "KOSPI") -> list:
         LIMIT ?
     """, (market, days)).fetchall()
     conn.close()
-    return [dict(r) for r in rows][::-1]  # 시간 순
+    return [dict(r) for r in rows]  # 최신 날짜가 맨 위 (DESC 정렬 유지)
 
 
 def query_weekly_top(days: int = 7, top_n: int = 30, direction: str = "buy") -> list:
