@@ -1270,7 +1270,9 @@ function renderMentionsHTML(text) {{
     '<span class="mention" data-stock="$1">@$1</span>');
 }}
 
-threadText.addEventListener('input', () => {{
+let imeComposing = false;
+function updateMentionHighlight() {{
+  if (imeComposing) return;  // 한글 IME 조합 중엔 갱신 안 함 (입력 깨짐 방지)
   const text = threadText.innerText;
   if (text.length > 1000) {{
     threadText.innerText = text.slice(0, 1000);
@@ -1281,6 +1283,16 @@ threadText.addEventListener('input', () => {{
     threadText.innerHTML = newHTML;
     setCaretCharOffset(threadText, caret);
   }}
+}}
+
+threadText.addEventListener('compositionstart', () => {{ imeComposing = true; }});
+threadText.addEventListener('compositionend', () => {{
+  imeComposing = false;
+  updateMentionHighlight();
+}});
+threadText.addEventListener('input', e => {{
+  if (e.isComposing || imeComposing) return;
+  updateMentionHighlight();
 }});
 
 // Enter는 줄바꿈, Ctrl/Cmd+Enter = 게시
