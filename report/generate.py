@@ -779,10 +779,58 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
     * {{ -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }}
   }}
 
-  /* 커뮤니티 (utterances 댓글) */
-  .comments-section {{ margin-top: 24px; padding-top: 16px; border-top: 2px solid #ecf0f1; }}
-  .comments-section h2 {{ border: 0; padding: 0; }}
+  /* 커뮤니티 우측 사이드바 (Firebase 익명 게시판) */
+  .community-panel {{
+    position: fixed; right: 12px; top: 80px; width: 320px;
+    max-height: calc(100vh - 100px); overflow-y: auto;
+    background: white; border-radius: 8px; padding: 14px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.08); z-index: 50;
+    font-size: 12px;
+  }}
+  @media (max-width: 1500px) {{
+    .community-panel {{ position: static; width: auto; max-height: none; margin-top: 24px; }}
+  }}
+  .community-title {{ margin: 0 0 4px; font-size: 14px; border-bottom: 2px solid #16a085; padding-bottom: 3px; }}
   .comments-hint {{ font-size: 11px; color: #95a5a6; margin-bottom: 8px; }}
+
+  .nick-row {{ display: flex; gap: 4px; margin-bottom: 8px; align-items: center; }}
+  .nick-label {{ font-size: 11px; color: #7f8c8d; }}
+  #nick-input {{ flex: 1; padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 11px; }}
+  .nick-save {{ padding: 4px 8px; border: 0; border-radius: 4px; background: #16a085; color: white;
+                font-size: 10px; cursor: pointer; }}
+  .nick-saved {{ background: #95a5a6 !important; }}
+
+  .thread-compose textarea {{
+    width: 100%; padding: 6px; border: 1px solid #ddd; border-radius: 4px;
+    font-size: 11px; resize: vertical; font-family: inherit;
+  }}
+  .thread-submit {{
+    background: #16a085; color: white; border: 0; padding: 6px 14px;
+    border-radius: 4px; font-size: 11px; cursor: pointer; margin-top: 4px;
+    font-weight: 600;
+  }}
+  .thread-submit:disabled {{ background: #bdc3c7; cursor: not-allowed; }}
+
+  .thread-list {{ margin-top: 12px; }}
+  .thread-loading {{ text-align: center; color: #95a5a6; padding: 16px 0; font-size: 11px; }}
+  .thread-item {{
+    background: #fafbfc; border-radius: 4px; padding: 8px;
+    margin-bottom: 6px; border-left: 3px solid #16a085;
+  }}
+  .thread-head {{ display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }}
+  .thread-nick {{ font-size: 11px; font-weight: 600; color: #2c3e50; }}
+  .thread-time {{ font-size: 10px; color: #95a5a6; }}
+  .thread-text {{ font-size: 12px; color: #2c3e50; white-space: pre-wrap; word-break: break-word; }}
+  .thread-text .mention {{ color: #16a085; font-weight: 600; cursor: pointer; }}
+  .thread-text .mention:hover {{ text-decoration: underline; }}
+  .reply-toggle {{ font-size: 10px; color: #3498db; cursor: pointer; margin-top: 4px; display: inline-block; }}
+  .reply-list {{ margin-top: 6px; padding-left: 8px; border-left: 2px solid #ecf0f1; }}
+  .reply-item {{ background: white; padding: 5px; border-radius: 3px; margin-bottom: 3px; font-size: 11px; }}
+  .reply-nick {{ font-weight: 600; color: #2c3e50; margin-right: 4px; }}
+  .reply-compose {{ display: flex; gap: 4px; margin-top: 4px; }}
+  .reply-compose input {{ flex: 1; padding: 3px 6px; border: 1px solid #ddd; border-radius: 3px; font-size: 11px; }}
+  .reply-compose button {{ background: #3498db; color: white; border: 0; padding: 3px 8px; border-radius: 3px;
+                           font-size: 10px; cursor: pointer; }}
 
   /* 섹션 표시 토글 (todayygg 스타일 chip) */
   .layer-toggles {{
@@ -996,18 +1044,26 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   </div>
 </div>
 
-<div class="comments-section" data-section="comments">
-  <h2>💬 커뮤니티</h2>
-  <div class="comments-hint">GitHub 계정으로 로그인 후 댓글 작성 가능 · 페이지(실시간/마감)별 별도 스레드</div>
-  <script src="https://utteranc.es/client.js"
-          repo="sejong-k1m/report-ygg"
-          issue-term="pathname"
-          label="comments"
-          theme="github-light"
-          crossorigin="anonymous"
-          async>
-  </script>
-</div>
+<aside class="community-panel" data-section="comments" id="community">
+  <h2 class="community-title">💬 커뮤니티</h2>
+  <div class="comments-hint">닉네임 입력 후 글 작성 · @종목명으로 종목 토론</div>
+
+  <div class="nick-row">
+    <span class="nick-label">닉네임:</span>
+    <input id="nick-input" type="text" maxlength="20" placeholder="익명">
+    <button id="nick-save" class="nick-save">저장</button>
+  </div>
+
+  <div class="thread-compose">
+    <textarea id="thread-text" maxlength="1000" rows="3"
+      placeholder="@종목명을 통해 종목에 대한 의견을 남길 수 있습니다"></textarea>
+    <button id="thread-submit" class="thread-submit">게시</button>
+  </div>
+
+  <div id="thread-list" class="thread-list">
+    <div class="thread-loading">불러오는 중...</div>
+  </div>
+</aside>
 
 <div class="footer">
   ⚠ 투자 권유가 아닙니다. KRX 공개 데이터 가공물. &nbsp;|&nbsp;
@@ -1066,6 +1122,185 @@ document.querySelectorAll('table.sortable th[data-sort]').forEach(th => {{
     }});
     rows.forEach(r => tbody.appendChild(r));
   }});
+}});
+</script>
+
+<script type="module">
+// ============================================================
+// Firebase 익명 커뮤니티 (닉네임 + 댓글 + @멘션)
+// ============================================================
+import {{ initializeApp }} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+import {{ getAuth, signInAnonymously }} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+import {{
+  getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot, serverTimestamp
+}} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+const firebaseConfig = {{
+  apiKey: "AIzaSyCRsyngKyS36agwoiEy9720WbEVq0qCT1g",
+  authDomain: "report-ygg-d53f1.firebaseapp.com",
+  projectId: "report-ygg-d53f1",
+  storageBucket: "report-ygg-d53f1.firebasestorage.app",
+  messagingSenderId: "183908458182",
+  appId: "1:183908458182:web:63b671cb6be9371dac81c7"
+}};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+let currentUid = null;
+signInAnonymously(auth).then(c => {{ currentUid = c.user.uid; }}).catch(e => console.warn("anon auth failed", e));
+
+// ---------- 닉네임 ----------
+const NICK_KEY = 'report-ygg-nick';
+const nickInput = document.getElementById('nick-input');
+const nickSave = document.getElementById('nick-save');
+nickInput.value = localStorage.getItem(NICK_KEY) || '';
+if (nickInput.value) {{ nickSave.textContent = '변경'; nickSave.classList.add('nick-saved'); }}
+nickSave.addEventListener('click', () => {{
+  const v = (nickInput.value || '').trim().slice(0, 20);
+  if (!v) {{ alert('닉네임을 입력하세요'); return; }}
+  localStorage.setItem(NICK_KEY, v);
+  nickSave.textContent = '변경';
+  nickSave.classList.add('nick-saved');
+}});
+function getNick() {{
+  return localStorage.getItem(NICK_KEY) || '익명';
+}}
+
+// ---------- 멘션 추출 + 렌더 ----------
+function extractMentions(text) {{
+  const matches = text.match(/@[\\uac00-\\ud7a3A-Za-z0-9]+/g);
+  return matches ? [...new Set(matches.map(m => m.slice(1)))] : [];
+}}
+function renderText(text) {{
+  // @멘션을 .mention span 으로 감쌈, 그 외엔 escape
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return esc(text).replace(/@([\\uac00-\\ud7a3A-Za-z0-9]+)/g,
+    '<span class="mention" data-stock="$1">@$1</span>');
+}}
+function fmtTime(ts) {{
+  if (!ts || !ts.toDate) return '';
+  const d = ts.toDate();
+  const now = new Date();
+  const diff = Math.floor((now - d) / 1000);
+  if (diff < 60) return '방금';
+  if (diff < 3600) return Math.floor(diff/60) + '분 전';
+  if (diff < 86400) return Math.floor(diff/3600) + '시간 전';
+  return d.toLocaleDateString('ko-KR', {{ month: 'numeric', day: 'numeric' }});
+}}
+
+// ---------- 새 글 작성 ----------
+const threadText = document.getElementById('thread-text');
+const threadSubmit = document.getElementById('thread-submit');
+threadSubmit.addEventListener('click', async () => {{
+  const text = (threadText.value || '').trim();
+  if (!text) return;
+  if (!currentUid) {{ alert('인증 중... 잠시 후 다시 시도'); return; }}
+  threadSubmit.disabled = true;
+  try {{
+    await addDoc(collection(db, 'threads'), {{
+      nickname: getNick(),
+      text: text.slice(0, 1000),
+      mentions: extractMentions(text),
+      uid: currentUid,
+      createdAt: serverTimestamp()
+    }});
+    threadText.value = '';
+  }} catch (e) {{
+    console.error(e);
+    alert('게시 실패: ' + e.message);
+  }} finally {{
+    threadSubmit.disabled = false;
+  }}
+}});
+
+// ---------- 글 목록 실시간 listen ----------
+const threadList = document.getElementById('thread-list');
+const repliesCache = {{}};   // threadId → unsubscribe fn
+
+function renderThread(id, data) {{
+  const div = document.createElement('div');
+  div.className = 'thread-item';
+  div.id = 'th-' + id;
+  div.innerHTML = `
+    <div class="thread-head">
+      <span class="thread-nick">${{(data.nickname || '익명').replace(/[<>]/g,'')}}</span>
+      <span class="thread-time">${{fmtTime(data.createdAt)}}</span>
+    </div>
+    <div class="thread-text">${{renderText(data.text || '')}}</div>
+    <span class="reply-toggle" data-id="${{id}}">↳ 답글</span>
+    <div class="reply-section" style="display:none;">
+      <div class="reply-list" id="rl-${{id}}"></div>
+      <div class="reply-compose">
+        <input type="text" maxlength="500" placeholder="답글" />
+        <button>등록</button>
+      </div>
+    </div>
+  `;
+  return div;
+}}
+
+function attachReplyHandlers(threadEl, threadId) {{
+  const toggle = threadEl.querySelector('.reply-toggle');
+  const section = threadEl.querySelector('.reply-section');
+  toggle.addEventListener('click', () => {{
+    const opened = section.style.display !== 'none';
+    section.style.display = opened ? 'none' : 'block';
+    if (!opened && !repliesCache[threadId]) {{
+      // 답글 listen 시작
+      const rq = query(collection(db, 'threads', threadId, 'replies'), orderBy('createdAt', 'asc'), limit(50));
+      repliesCache[threadId] = onSnapshot(rq, snap => {{
+        const rl = document.getElementById('rl-' + threadId);
+        if (!rl) return;
+        rl.innerHTML = '';
+        snap.forEach(d => {{
+          const r = d.data();
+          const ri = document.createElement('div');
+          ri.className = 'reply-item';
+          ri.innerHTML = `<span class="reply-nick">${{(r.nickname || '익명').replace(/[<>]/g,'')}}</span>${{renderText(r.text || '')}}`;
+          rl.appendChild(ri);
+        }});
+      }});
+    }}
+  }});
+  const replyBtn = threadEl.querySelector('.reply-compose button');
+  const replyInput = threadEl.querySelector('.reply-compose input');
+  replyBtn.addEventListener('click', async () => {{
+    const text = (replyInput.value || '').trim();
+    if (!text || !currentUid) return;
+    replyBtn.disabled = true;
+    try {{
+      await addDoc(collection(db, 'threads', threadId, 'replies'), {{
+        nickname: getNick(),
+        text: text.slice(0, 500),
+        uid: currentUid,
+        createdAt: serverTimestamp()
+      }});
+      replyInput.value = '';
+    }} catch (e) {{
+      alert('답글 실패: ' + e.message);
+    }} finally {{
+      replyBtn.disabled = false;
+    }}
+  }});
+}}
+
+// 메인 글 listen (최신 50개)
+const tq = query(collection(db, 'threads'), orderBy('createdAt', 'desc'), limit(50));
+onSnapshot(tq, snap => {{
+  threadList.innerHTML = '';
+  if (snap.empty) {{
+    threadList.innerHTML = '<div class="thread-loading">아직 글이 없습니다. 첫 글을 남겨보세요.</div>';
+    return;
+  }}
+  snap.forEach(d => {{
+    const el = renderThread(d.id, d.data());
+    threadList.appendChild(el);
+    attachReplyHandlers(el, d.id);
+  }});
+}}, err => {{
+  threadList.innerHTML = '<div class="thread-loading">로드 실패: ' + err.message + '</div>';
 }});
 </script>
 
