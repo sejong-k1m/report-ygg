@@ -497,7 +497,21 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
 
     # 모드별 부제 + 데이터 신선도 안내
     if mode == "realtime":
-        mode_subtitle = f"⏱ 실시간 — 마지막 업데이트: <b>{last_update_hhmm}</b> · 다음 갱신 예정: {next_update_at}"
+        intraday_ts = payload.get("intraday_updated_at", "")
+        # ISO 형식 "2026-05-22T11:08:04.000+09:00" → "11:08" 추출
+        intraday_hhmm = ""
+        if intraday_ts:
+            try:
+                intraday_hhmm = intraday_ts[11:16]   # "11:08"
+            except Exception:
+                intraday_hhmm = ""
+        if intraday_hhmm:
+            mode_subtitle = (
+                f"⏱ 실시간 — 토스 trading-trend <b>{intraday_hhmm}</b> KST 기준 (장중 분 단위 갱신) "
+                f"· 페이지 빌드: {last_update_hhmm}"
+            )
+        else:
+            mode_subtitle = f"⏱ 실시간 — 마지막 업데이트: <b>{last_update_hhmm}</b> · 다음 갱신 예정: {next_update_at}"
         data_freshness_note = ""
     else:  # closing
         # 데이터의 trade_date가 오늘이면 ✅, 아니면 직전 영업일 데이터 안내

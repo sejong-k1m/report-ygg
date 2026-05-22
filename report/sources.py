@@ -31,6 +31,7 @@ JUDAL_SELL_URL = "https://www.judal.co.kr/?view=stockList&type=fundSell"
 
 # Toss Securities 비공식 API — stock-prices/details (시총/현재가/전일종가)
 TOSS_STOCK_PRICES_URL = "https://wts-info-api.tossinvest.com/api/v3/stock-prices/details"
+TOSS_TRADING_TREND_URL = "https://wts-info-api.tossinvest.com/api/v1/stock-infos/trade/trend/trading-trend"
 
 _HEADERS = {
     "User-Agent": (
@@ -139,6 +140,84 @@ def todayygg_to_standard_rows(payload: dict) -> tuple:
 # ==========================================================================
 # Toss stock-prices/details — 시총/현재가/등락률 보강용
 # ==========================================================================
+
+def fetch_toss_trading_trend(codes: list) -> dict:
+    """
+    토스 trading-trend — 종목별 일별 투자자별 매매 (장중 분 단위 갱신).
+    종목당 1 호출 (size=1로 오늘 데이터만).
+
+    return: {stock_code: {
+        base_date, updated_at,
+        pension_buy_qty, pension_sell_qty, pension_net_qty,
+        foreigner_buy_qty, foreigner_sell_qty, foreigner_net_qty,
+        institution_buy_qty, institution_sell_qty, institution_net_qty,
+        close, is_today: bool
+    }}
+    """
+    if not codes:
+        return {}
+    import datetime as dt
+    today = dt.date.today().strftime("%Y-%m-%d")
+    result = {}
+
+    for code in codes:
+        if not code:
+            continue
+        product_code = code if code.startswith("A") else f"A{code}"
+        try:
+            r = requests.get(
+                TOSS_TRADING_TREND_URL,
+                params={"productCode": product_code, "size": 1},
+                headers=_HEADERS,
+                timeout=10,
+            )
+            r.raise_for_status()
+            payload = r.json()
+        except Exception as e:
+            log.warning("toss trading-trend %s failed: %s", code, e)
+            continue
+
+        body = (payload.get("result") or {}).get("body") or []
+        if not body:
+            continue
+        latest = body[0]
+        base_date = latest.get("baseDate", "")
+        is_today = (base_date == today)
+
+        # 연기금: 매수량 + 순매수 → 매도량 도출
+        pension_buy = int(latest.get("pensionFundBuyVolume") or 0)
+        pension_net = int(latest.get("netPensionFundBuyVolume") or 0)
+        pension_sell = pension_buy - pension_net
+
+        # 외국인
+        foreigner_buy = int(latest.get("foreignerBuyVolume") or 0)
+        foreigner_sell = int(latest.get("foreignerSellVolume") or 0)
+        foreigner_net = int(latest.get("netForeignerBuyVolume") or 0)
+
+        # 기관 합계
+        institution_buy = int(latest.get("institutionBuyVolume") or 0)
+        institution_sell = int(latest.get("institutionSellVolume") or 0)
+        institution_net = int(latest.get("netInstitutionBuyVolume") or 0)
+
+        result[code.lstrip("A")] = {
+            "base_date": base_date,
+            "updated_at": latest.get("updatedAt", ""),
+            "is_today": is_today,
+            "pension_buy_qty": pension_buy,
+            "pension_sell_qty": pension_sell,
+            "pension_net_qty": pension_net,
+            "foreigner_buy_qty": foreigner_buy,
+            "foreigner_sell_qty": foreigner_sell,
+            "foreigner_net_qty": foreigner_net,
+            "institution_buy_qty": institution_buy,
+            "institution_sell_qty": institution_sell,
+            "institution_net_qty": institution_net,
+            "close": int(latest.get("close") or 0),
+        }
+    log.info("toss trading-trend → %d 종목 (today=%d개)",
+             len(result), sum(1 for v in result.values() if v["is_today"]))
+    return result
+
 
 def fetch_toss_stock_prices(codes: list, chunk_size: int = 50) -> dict:
     """
@@ -317,14 +396,16 @@ def fetch_judal_both() -> dict:
 # 통합 fetcher — 외부 자동 vs CSV 수동 폴백
 # ==========================================================================
 
-def fetch_auto(merge_judal: bool = True, merge_toss_prices: bool = True) -> dict:
+def fetch_auto(merge_judal: bool = True, merge_toss_prices: bool = True,
+                merge_toss_trend: bool = True) -> dict:
     """
     자동 fetch 시도. 성공 시:
       {"trade_date": ..., "rows": [...], "source": "todayygg+toss+judal"}
     실패 시 None.
 
     데이터 소스 머지:
-    - todayygg: 연기금 매매 (primary)
+    - todayygg: 활발 종목 발견 (어제 마감 기준)
+    - toss trading-trend: 종목별 오늘 장중 매매 (분 단위 갱신) ← 진짜 실시간
     - toss stock-prices/details: 현재가 / 시가총액 / 등락률 (시총비/상승% 계산용)
     - judal: PBR/PER/52주변동률/기대수익률 (보조 가치지표)
     """
@@ -359,7 +440,41 @@ def fetch_auto(merge_judal: bool = True, merge_toss_prices: bool = True) -> dict
             toss_merged += 1
         log.info("toss prices merged: %d/%d", toss_merged, len(rows))
         if toss_merged > 0:
-            sources_used.append("toss")
+            sources_used.append("toss-prices")
+
+    # 1.5) Toss trading-trend 머지 — 오늘 장중 실시간 매매 데이터로 덮어씀
+    intraday_updated_at = ""
+    intraday_base_date = ""
+    if merge_toss_trend:
+        codes = [r["stock_code"] for r in rows if r.get("stock_code")]
+        trend_map = fetch_toss_trading_trend(codes)
+        today_merged = 0
+        for r in rows:
+            t = trend_map.get(r["stock_code"])
+            if not t:
+                continue
+            # 토스 trading-trend가 오늘 데이터를 주면 매매 수치 덮어씀
+            if t["is_today"]:
+                close = r.get("close_price") or t.get("close") or 0
+                # 거래량(주) × 종가 = 거래대금 근사
+                r["buy_amount"] = t["pension_buy_qty"] * close
+                r["sell_amount"] = t["pension_sell_qty"] * close
+                r["net_amount"] = t["pension_net_qty"] * close
+                r["buy_qty"] = t["pension_buy_qty"]
+                r["sell_qty"] = t["pension_sell_qty"]
+                r["net_qty"] = t["pension_net_qty"]
+                r["intraday"] = True
+                r["intraday_updated_at"] = t["updated_at"]
+                # net_to_cap 재계산
+                mc = r.get("market_cap", 0)
+                r["net_to_cap"] = (r["net_amount"] / mc * 100) if mc > 0 else 0.0
+                if not intraday_updated_at or t["updated_at"] > intraday_updated_at:
+                    intraday_updated_at = t["updated_at"]
+                intraday_base_date = t["base_date"]
+                today_merged += 1
+        log.info("toss trading-trend today data merged: %d/%d", today_merged, len(rows))
+        if today_merged > 0:
+            sources_used.append("toss-realtime")
 
     # 2) judal 가치지표 머지 (종목명 기준)
     if merge_judal:
@@ -379,8 +494,13 @@ def fetch_auto(merge_judal: bool = True, merge_toss_prices: bool = True) -> dict
         if merged > 0:
             sources_used.append("judal")
 
+    # trade_date 결정: 토스 trading-trend의 base_date(오늘 데이터)가 있으면 그것 우선
+    final_trade_date = intraday_base_date.replace("-", "") if intraday_base_date else trade_date
+
     return {
-        "trade_date": trade_date,
+        "trade_date": final_trade_date,
         "rows": rows,
         "source": "+".join(sources_used),
+        "intraday_updated_at": intraday_updated_at,
+        "intraday": bool(intraday_updated_at),
     }
