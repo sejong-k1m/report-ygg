@@ -467,8 +467,10 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
         action_cls = "btn-buy-big" if kind == "buy" else "btn-sell-big"
 
         price_html = (
-            f"<div class='top5-price'>{close:,}원</div>"
-            f"<div class='top5-change {chg_cls}'>{arrow} {abs(change_amt):,} ({chg_pct:+.2f}%)</div>"
+            f"<div class='top5-price-line'>"
+            f"<span class='top5-price'>{close:,}</span> "
+            f"<span class='top5-change {chg_cls}'>{arrow}{abs(change_amt):,} ({chg_pct:+.2f}%)</span>"
+            f"</div>"
         ) if close > 0 else "<div class='top5-price-na'>현재가 N/A</div>"
 
         return (
@@ -620,8 +622,9 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
 
   /* 일반 표 */
   table {{ width: 100%; border-collapse: collapse; background: white; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }}
-  th, td {{ padding: 6px 10px; font-size: 12px; border-bottom: 1px solid #ecf0f1; }}
-  th {{ background: #34495e; color: white; text-align: left; font-weight: 500; font-size: 11px; }}
+  th, td {{ padding: 5px 7px; font-size: 11px; border-bottom: 1px solid #ecf0f1; white-space: nowrap; }}
+  th {{ background: #34495e; color: white; text-align: left; font-weight: 500; font-size: 10px; }}
+  td.name {{ overflow: hidden; text-overflow: ellipsis; max-width: 120px; }}
   table.sortable th[data-sort] {{ cursor: pointer; user-select: none; }}
   table.sortable th[data-sort]:hover {{ background: #2c3e50; }}
   table.sortable th[data-sort]::after {{ content: " ⇅"; opacity: 0.4; font-size: 9px; }}
