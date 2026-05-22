@@ -505,13 +505,26 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
                 intraday_hhmm = intraday_ts[11:16]   # "11:08"
             except Exception:
                 intraday_hhmm = ""
+        # 다음 15분 단위 시각 계산
+        cur_min = now.minute
+        next_min = ((cur_min // 15) + 1) * 15
+        if next_min >= 60:
+            next_update_at = (now.replace(minute=0, second=0, microsecond=0) + dt.timedelta(hours=1)).strftime("%H:%M")
+        else:
+            next_update_at = now.replace(minute=next_min, second=0, microsecond=0).strftime("%H:%M")
         if intraday_hhmm:
             mode_subtitle = (
-                f"⏱ 실시간 — 토스 trading-trend <b>{intraday_hhmm}</b> KST 기준 (장중 분 단위 갱신) "
-                f"· 페이지 빌드: {last_update_hhmm}"
+                f"⏱ 실시간 — 토스 trading-trend <b>{intraday_hhmm}</b> KST 기준 "
+                f"· 페이지 빌드: {last_update_hhmm} "
+                f"· 다음 갱신 예정: {next_update_at} "
+                f"· 업데이트 주기: 15분"
             )
         else:
-            mode_subtitle = f"⏱ 실시간 — 마지막 업데이트: <b>{last_update_hhmm}</b> · 다음 갱신 예정: {next_update_at}"
+            mode_subtitle = (
+                f"⏱ 실시간 — 마지막 업데이트: <b>{last_update_hhmm}</b> "
+                f"· 다음 갱신 예정: {next_update_at} "
+                f"· 업데이트 주기: 15분"
+            )
         data_freshness_note = ""
     else:  # closing
         # 데이터의 trade_date가 오늘이면 ✅, 아니면 직전 영업일 데이터 안내
