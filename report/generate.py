@@ -366,20 +366,48 @@ def _consecutive_label(r: dict) -> str:
 
 def _ai_score(r: dict) -> float:
     """
-    간이 AI 점수 (가중 합산):
-    - 시총비 (%) × 100  ← 시총 대비 비중 큰 매매는 강한 시그널
-    - 등락률 (%) × 2    ← 모멘텀
-    - 활발 기간 (일) × 5 ← 연속 매수면 보너스
-    - 누적 순매수 (억) × 0.01 ← 누적 매수액 보너스
-    return: float (양수 = 매수 강세, 음수 = 매도 강세)
+    종합 점수 (가중 합산, 8개 변수):
+
+    매매 강도 (큰 영향):
+    - 시총비 (%)              × 100   ← 시총 대비 비중
+    - 시총비 vs 전일거래대금  × 5     ← 평소 거래량 대비 강도
+
+    모멘텀:
+    - 등락률 (%)              × 1.5
+    - 거래량 강도 (100 기준)  × 0.05  ← 토스 tradingStrength
+
+    매수 누적 / 지속성:
+    - 활발 기간 (일)          × 4    ← 연속 매수 보너스
+    - 누적 순매수 (억)        × 0.005
+    - 전일 대비 순매수 증가(억) × 0.02
+
+    음수 페널티:
+    - 연속 매도일수           × -8   ← 강한 매도세
+
+    return: float — 양수=매수 강세, 음수=매도 강세
     """
     score = 0.0
+    # 시총비 (가장 큼)
     score += (r.get("net_to_cap", 0) or 0) * 100
-    score += (r.get("change_rate", 0) or 0) * 2
+    # 전일 거래대금 대비 순매수 비율 (활발도 시그널)
+    score += (r.get("net_vs_prev_val_ratio") or 0) * 5
+    # 등락률
+    score += (r.get("change_rate", 0) or 0) * 1.5
+    # 거래량 강도 (100 = 평소, 200 = 2배 활발)
+    ts = r.get("trading_strength", 0) or 0
+    if ts > 0:
+        score += (ts - 100) * 0.05
+    # 활발 매수 기간 (양수면 가산)
     if r.get("net_amount", 0) > 0:
-        score += _period_days(r) * 5
-    cumul = (r.get("cumulative_net_amount") or 0) / 100_000_000  # 억 단위
-    score += cumul * 0.01
+        score += _period_days(r) * 4
+    # 누적 순매수 (억 단위)
+    cumul = (r.get("cumulative_net_amount") or 0) / 100_000_000
+    score += cumul * 0.005
+    # 전일 대비 순매수 변화 (모멘텀 변화)
+    delta = (r.get("delta_net_amount") or 0) / 100_000_000
+    score += delta * 0.02
+    # 연속 매도일수 페널티
+    score -= (r.get("consecutive_sell_days", 0) or 0) * 8
     return round(score, 1)
 
 
