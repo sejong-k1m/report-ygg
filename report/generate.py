@@ -144,12 +144,17 @@ def upsert_market_summary(conn, trade_date: str, market: str, summary: dict):
 # 데이터 수집
 # ==========================================================================
 
-def collect_one_day(trade_date: str, markets=("KOSPI", "KOSDAQ"), use_auto: bool = True) -> dict:
+def collect_one_day(trade_date: str, markets=("KOSPI", "KOSDAQ"), use_auto: bool = True,
+                     mode: str = "realtime") -> dict:
     """
     하루치 연기금 데이터 수집 + DB 저장.
 
+    mode:
+      - "realtime": 오늘 장중 toss trading-trend 머지 (장중 진행 데이터)
+      - "closing":  trading-trend 제외, todayygg 마감 데이터만 (직전 영업일 15:30 기준)
+
     데이터 소스 우선순위:
-    1. use_auto=True 면 todayygg+judal 자동 fetch (사람 손 없이)
+    1. use_auto=True 면 todayygg + toss + judal 자동 fetch
     2. 자동 실패 시 report/input/ CSV (수동 다운로드)
     3. 둘 다 없으면 빈 리포트 + 안내 배너
     """
@@ -159,10 +164,14 @@ def collect_one_day(trade_date: str, markets=("KOSPI", "KOSDAQ"), use_auto: bool
     actual_trade_date = trade_date
     source_used = "none"
 
+    # closing 모드는 toss trading-trend 머지 안 함 (장중 데이터로 오염 방지)
+    merge_intraday = (mode == "realtime")
+
     # --- 1) AUTO: todayygg + judal ---
     if use_auto:
-        log.info("자동 fetch 시도: todayygg + judal ...")
-        auto = sources.fetch_auto(merge_judal=True)
+        log.info("자동 fetch 시도: todayygg + judal ... (mode=%s, intraday=%s)",
+                 mode, merge_intraday)
+        auto = sources.fetch_auto(merge_judal=True, merge_toss_trend=merge_intraday)
         if auto and auto.get("rows"):
             actual_trade_date = auto.get("trade_date") or trade_date
             source_used = auto.get("source", "todayygg")
@@ -846,21 +855,25 @@ def main():
 
     log.info("=== 리포트 빌드 시작: %s, mode=%s, markets=%s, auto=%s ===",
              trade_date, mode, markets, use_auto)
-    payload = collect_one_day(trade_date, markets=markets, use_auto=use_auto)
+    payload = collect_one_day(trade_date, markets=markets, use_auto=use_auto, mode=mode)
     log.info("collected: %d rows, %d markets, source=%s",
              len(payload["rows"]), len(payload["markets"]), payload.get("source", "?"))
 
     # HTML (모드별 파일명)
-    # 정책: realtime 빌드는 항상 closing.html 도 같이 갱신 (같은 데이터, closing-mode 렌더).
-    #       16시 이후 별도 closing 빌드가 같은 파일을 다시 덮어쓰면서 closing-mode 그대로 유지.
+    # 정책: realtime 빌드는 realtime.html + index.html.
+    #       closing.html은 trading-trend 제외한 별도 fetch로 생성 (마감 기준 데이터 정확성).
     if mode == "realtime":
         realtime_html = render_html(payload, mode="realtime")
         for fname in ("realtime.html", "index.html"):
             (OUTPUT_DIR / fname).write_text(realtime_html, encoding="utf-8")
             log.info("HTML written: %s", OUTPUT_DIR / fname)
-        closing_html = render_html(payload, mode="closing")
+        # closing.html — 별도 fetch (trading-trend 머지 X) 로 직전 영업일 마감 데이터
+        log.info("closing 데이터 별도 fetch (trading-trend 제외)...")
+        payload_closing = collect_one_day(trade_date, markets=markets, use_auto=use_auto, mode="closing")
+        closing_html = render_html(payload_closing, mode="closing")
         (OUTPUT_DIR / "closing.html").write_text(closing_html, encoding="utf-8")
-        log.info("HTML written (closing 동시 갱신): %s", OUTPUT_DIR / "closing.html")
+        log.info("HTML written (closing): %s [%d rows]",
+                 OUTPUT_DIR / "closing.html", len(payload_closing.get("rows", [])))
     else:
         closing_html = render_html(payload, mode="closing")
         (OUTPUT_DIR / "closing.html").write_text(closing_html, encoding="utf-8")
