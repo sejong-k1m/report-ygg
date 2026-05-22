@@ -806,6 +806,20 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
     width: 100%; padding: 6px; border: 1px solid #ddd; border-radius: 4px;
     font-size: 11px; resize: vertical; font-family: inherit;
   }}
+  .thread-editor {{
+    width: 100%; min-height: 56px; max-height: 200px; overflow-y: auto;
+    padding: 6px; border: 1px solid #ddd; border-radius: 4px;
+    font-size: 11px; font-family: inherit; line-height: 1.4;
+    outline: none; word-break: break-word; white-space: pre-wrap;
+  }}
+  .thread-editor:focus {{ border-color: #16a085; }}
+  .thread-editor:empty::before {{
+    content: attr(data-placeholder); color: #aaa; pointer-events: none;
+  }}
+  .thread-editor .mention {{
+    color: #2980b9; font-weight: 600; background: #ecf6fc;
+    padding: 0 3px; border-radius: 3px;
+  }}
   .thread-submit {{
     background: #16a085; color: white; border: 0; padding: 6px 14px;
     border-radius: 4px; font-size: 11px; cursor: pointer; margin-top: 4px;
@@ -1071,8 +1085,8 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   </div>
 
   <div class="thread-compose">
-    <textarea id="thread-text" maxlength="1000" rows="3"
-      placeholder="@종목명을 통해 종목에 대한 의견을 남길 수 있습니다"></textarea>
+    <div id="thread-text" class="thread-editor" contenteditable="true"
+         data-placeholder="@종목명을 통해 종목에 대한 의견을 남길 수 있습니다"></div>
     <button id="thread-submit" class="thread-submit">게시</button>
   </div>
 
@@ -1208,11 +1222,77 @@ function fmtTime(ts) {{
   return d.toLocaleDateString('ko-KR', {{ month: 'numeric', day: 'numeric' }});
 }}
 
-// ---------- 새 글 작성 ----------
+// ---------- 새 글 작성 (contenteditable 실시간 멘션) ----------
 const threadText = document.getElementById('thread-text');
 const threadSubmit = document.getElementById('thread-submit');
+
+// caret 위치(텍스트 오프셋) 읽기/쓰기
+function getCaretCharOffset(el) {{
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return 0;
+  const range = sel.getRangeAt(0);
+  const pre = range.cloneRange();
+  pre.selectNodeContents(el);
+  pre.setEnd(range.endContainer, range.endOffset);
+  return pre.toString().length;
+}}
+function setCaretCharOffset(el, offset) {{
+  const range = document.createRange();
+  const sel = window.getSelection();
+  let charCount = 0, found = false;
+  function walk(node) {{
+    if (found) return;
+    if (node.nodeType === Node.TEXT_NODE) {{
+      const next = charCount + node.length;
+      if (offset <= next) {{
+        range.setStart(node, Math.max(0, offset - charCount));
+        range.collapse(true);
+        found = true;
+        return;
+      }}
+      charCount = next;
+    }} else {{
+      for (const child of node.childNodes) walk(child);
+    }}
+  }}
+  walk(el);
+  if (!found) {{
+    range.selectNodeContents(el);
+    range.collapse(false);
+  }}
+  sel.removeAllRanges();
+  sel.addRange(range);
+}}
+
+function renderMentionsHTML(text) {{
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return esc(text).replace(/@([\\uac00-\\ud7a3A-Za-z0-9]+)/g,
+    '<span class="mention" data-stock="$1">@$1</span>');
+}}
+
+threadText.addEventListener('input', () => {{
+  const text = threadText.innerText;
+  if (text.length > 1000) {{
+    threadText.innerText = text.slice(0, 1000);
+  }}
+  const caret = getCaretCharOffset(threadText);
+  const newHTML = renderMentionsHTML(text);
+  if (threadText.innerHTML !== newHTML) {{
+    threadText.innerHTML = newHTML;
+    setCaretCharOffset(threadText, caret);
+  }}
+}});
+
+// Enter는 줄바꿈, Ctrl/Cmd+Enter = 게시
+threadText.addEventListener('keydown', e => {{
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {{
+    e.preventDefault();
+    threadSubmit.click();
+  }}
+}});
+
 threadSubmit.addEventListener('click', async () => {{
-  const text = (threadText.value || '').trim();
+  const text = (threadText.innerText || '').trim();
   if (!text) return;
   if (!currentUid) {{ alert('인증 중... 잠시 후 다시 시도'); return; }}
   threadSubmit.disabled = true;
@@ -1224,7 +1304,7 @@ threadSubmit.addEventListener('click', async () => {{
       uid: currentUid,
       createdAt: serverTimestamp()
     }});
-    threadText.value = '';
+    threadText.innerHTML = '';
   }} catch (e) {{
     console.error(e);
     alert('게시 실패: ' + e.message);
