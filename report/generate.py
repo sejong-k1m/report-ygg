@@ -399,7 +399,8 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
         )
 
     def _row_today(r, key="net_amount"):
-        net = r.get(key, 0)
+        # 첫 컬럼은 항상 net_amount(순매수액) 표시. key 인자는 호출자가 정렬용으로만 사용.
+        net = r.get("net_amount", 0)
         chg = r.get("change_rate", 0)
         chg_class = "pos" if chg > 0 else ("neg" if chg < 0 else "")
         return (
