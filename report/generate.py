@@ -465,16 +465,21 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
         net = r.get("net_amount", 0)
         chg = r.get("change_rate", 0)
         chg_class = "pos" if chg > 0 else ("neg" if chg < 0 else "")
+        score = _ai_score(r)
+        consec = _consecutive_label(r)
+        consec_cls = "consec-buy" if "연속매수" in consec else ("consec-sell" if "연속매도" in consec else "")
+        consec_html = f"<span class='consec-badge {consec_cls}'>{consec}</span>" if consec else ""
         return (
             f"<tr>"
             f"<td class='code'>{_esc(r['stock_code'])}</td>"
-            f"<td class='name'>{_esc(r['stock_name'])}</td>"
+            f"<td class='name'>{_esc(r['stock_name'])}{consec_html}</td>"
             f"<td class='num {'pos' if net >= 0 else 'neg'}' data-value='{net}'>{_fmt_won(net)}</td>"
             f"<td class='num' data-value='{r.get('buy_amount', 0)}'>{_fmt_won(r.get('buy_amount', 0))}</td>"
             f"<td class='num' data-value='{r.get('sell_amount', 0)}'>{_fmt_won(r.get('sell_amount', 0))}</td>"
             f"<td class='num {chg_class}' data-value='{chg}'>{_fmt_pct(chg)}</td>"
             f"<td class='num' data-value='{r.get('close_price', 0)}'>{r.get('close_price', 0):,}</td>"
             f"<td class='num' data-value='{r.get('net_to_cap', 0)}'>{_fmt_pct(r.get('net_to_cap', 0))}</td>"
+            f"<td class='num' data-value='{score}'>{_ai_score_label(score)}</td>"
             f"<td class='market'>{_esc(r.get('market', ''))}</td>"
             f"<td class='actions'>{_toss_btns(r['stock_code'])}</td>"
             f"</tr>"
@@ -494,7 +499,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
             f"</tr>"
         )
 
-    empty_today = "<tr><td colspan='10' class='empty'>데이터 없음</td></tr>"
+    empty_today = "<tr><td colspan='11' class='empty'>데이터 없음</td></tr>"
     empty_weekly = "<tr><td colspan='8' class='empty'>히스토리 누적 중 (며칠 빌드 후 표시)</td></tr>"
 
     top_buy_html = "\n".join(_row_today(r) for r in top_buy) or empty_today
@@ -719,6 +724,33 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   .filter-hint {{ font-size: 11px; color: #95a5a6; margin: 4px 0 8px; }}
   .footer {{ text-align: center; color: #95a5a6; font-size: 11px; margin-top: 24px; padding: 16px; }}
 
+  /* PDF 다운로드 버튼 */
+  .pdf-btn {{
+    background: #16a085; color: white; border: 0; padding: 6px 12px;
+    border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;
+    margin-left: 8px;
+  }}
+  .pdf-btn:hover {{ background: #138d75; }}
+
+  /* 인쇄(PDF 저장) 전용 — 버튼/토글/댓글 등 제외, 표 그대로 */
+  @media print {{
+    body {{ padding: 8px; max-width: none; background: white; color: black; }}
+    .nav-tabs, .layer-toggles, .pdf-btn, .comments-section,
+    .footer, td.actions, th:last-child {{ display: none !important; }}
+    table.sortable td.actions {{ display: none !important; }}
+    .layout-header {{ grid-template-columns: 1fr; }}
+    h1 {{ font-size: 16px; }}
+    h2 {{ font-size: 12px; margin: 8px 0 4px; }}
+    .top5-wrap {{ grid-template-columns: repeat(5, 1fr); gap: 4px; }}
+    .top5-card {{ padding: 4px 6px; break-inside: avoid; }}
+    .top5-card .btn-buy-big, .top5-card .btn-sell-big {{ display: none !important; }}
+    table {{ font-size: 9px; break-inside: avoid; }}
+    th, td {{ padding: 2px 4px !important; font-size: 9px !important; }}
+    .grid2 {{ grid-template-columns: 1fr 1fr; gap: 6px; break-inside: avoid; }}
+    /* 색상 유지 */
+    * {{ -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }}
+  }}
+
   /* 커뮤니티 (utterances 댓글) */
   .comments-section {{ margin-top: 24px; padding-top: 16px; border-top: 2px solid #ecf0f1; }}
   .comments-section h2 {{ border: 0; padding: 0; }}
@@ -788,6 +820,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
 <div class="nav-tabs">
   <a href="realtime.html" class="{mode_active_rt}">⏱ 실시간 업데이트</a>
   <a href="closing.html" class="{mode_active_cl}">📊 마감 기준</a>
+  <button class="pdf-btn" onclick="window.print()">📥 PDF 저장</button>
 </div>
 <div class="mode-subtitle">{mode_subtitle}</div>
 {data_freshness_note}
@@ -831,7 +864,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
 <div class="grid2" data-section="today-top30">
   <div>
     <h2>오늘 연기금 순매수 Top 30</h2>
-    <div class="filter-hint">컬럼 헤더 클릭 → 정렬</div>
+    <div class="filter-hint">컬럼 헤더 클릭 → 정렬 · AI 점수: 시총比×100 + 등락률×2 + 연속일×5 종합</div>
     <table class="sortable">
       <thead><tr>
         <th>코드</th><th>종목명</th>
@@ -841,6 +874,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
         <th class="num" data-sort="num">등락률</th>
         <th class="num" data-sort="num">현재가</th>
         <th class="num" data-sort="num">시총比</th>
+        <th class="num" data-sort="num">AI</th>
         <th>시장</th><th>주문</th>
       </tr></thead>
       <tbody>{top_buy_html}</tbody>
@@ -848,7 +882,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   </div>
   <div>
     <h2>오늘 연기금 순매도 Top 30</h2>
-    <div class="filter-hint">컬럼 헤더 클릭 → 정렬</div>
+    <div class="filter-hint">컬럼 헤더 클릭 → 정렬 · AI 점수 음수 = 매도 강세</div>
     <table class="sortable">
       <thead><tr>
         <th>코드</th><th>종목명</th>
@@ -858,6 +892,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
         <th class="num" data-sort="num">등락률</th>
         <th class="num" data-sort="num">현재가</th>
         <th class="num" data-sort="num">시총比</th>
+        <th class="num" data-sort="num">AI</th>
         <th>시장</th><th>주문</th>
       </tr></thead>
       <tbody>{top_sell_html}</tbody>
@@ -877,6 +912,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
         <th class="num" data-sort="num">등락률</th>
         <th class="num" data-sort="num">현재가</th>
         <th class="num" data-sort="num">시총比</th>
+        <th class="num" data-sort="num">AI</th>
         <th>시장</th><th>주문</th>
       </tr></thead>
       <tbody>{top_cap_buy_html}</tbody>
@@ -893,6 +929,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
         <th class="num" data-sort="num">등락률</th>
         <th class="num" data-sort="num">현재가</th>
         <th class="num" data-sort="num">시총比</th>
+        <th class="num" data-sort="num">AI</th>
         <th>시장</th><th>주문</th>
       </tr></thead>
       <tbody>{top_cap_sell_html}</tbody>
@@ -968,11 +1005,9 @@ function applySectionState() {{
   }});
 }}
 
-document.querySelectorAll('.layer-toggles label').forEach(label => {{
-  label.addEventListener('click', e => {{
-    if (e.target.tagName === 'INPUT') return;  // 체크박스 직접 클릭 시 중복 방지
-    const checkbox = label.querySelector('input');
-    checkbox.checked = !checkbox.checked;
+document.querySelectorAll('.layer-toggles input').forEach(checkbox => {{
+  checkbox.addEventListener('change', () => {{
+    const label = checkbox.closest('label');
     const sec = label.dataset.sec;
     sectionState[sec] = checkbox.checked;
     localStorage.setItem(LS_KEY, JSON.stringify(sectionState));
