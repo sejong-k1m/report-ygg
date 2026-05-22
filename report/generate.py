@@ -563,47 +563,55 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   * {{ box-sizing: border-box; }}
   body {{
     font-family: -apple-system, "Segoe UI", Roboto, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
-    margin: 0; padding: 20px; background: #f5f7fa; color: #2c3e50; line-height: 1.5;
+    margin: 0 auto; padding: 12px 16px; max-width: 1500px;
+    background: #f5f7fa; color: #2c3e50; line-height: 1.4;
   }}
-  h1 {{ font-size: 22px; margin: 0 0 4px; }}
-  h2 {{ font-size: 16px; margin: 24px 0 8px; padding-bottom: 4px; border-bottom: 2px solid #3498db; }}
-  .meta {{ color: #7f8c8d; font-size: 12px; margin-bottom: 16px; }}
-  .banner-warn {{ background:#fef3cd; border:2px solid #f0ad4e; border-radius:6px; padding:16px; margin-bottom:20px; }}
+  h1 {{ font-size: 20px; margin: 0 0 4px; }}
+  h2 {{ font-size: 14px; margin: 16px 0 6px; padding-bottom: 3px; border-bottom: 2px solid #3498db; }}
+  .meta {{ color: #7f8c8d; font-size: 11px; margin-bottom: 12px; }}
+  .banner-warn {{ background:#fef3cd; border:2px solid #f0ad4e; border-radius:6px; padding:12px; margin-bottom:12px; }}
   .banner-warn h2 {{ margin-top:0; color:#8a6d3b; border:0; }}
-  .banner-warn ol {{ line-height:1.8; }}
-  .summary {{ display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }}
-  .card {{ background: white; border: 1px solid #e1e8ed; border-radius: 6px; padding: 16px; flex: 1; min-width: 200px; }}
-  .card .label {{ font-size: 11px; color: #95a5a6; text-transform: uppercase; }}
-  .card .value {{ font-size: 22px; font-weight: 600; margin-top: 4px; }}
+  .banner-warn ol {{ line-height:1.6; }}
+  .summary {{ display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }}
+  .card {{ background: white; border: 1px solid #e1e8ed; border-radius: 6px; padding: 8px 12px; flex: 1; min-width: 130px; }}
+  .card .label {{ font-size: 10px; color: #95a5a6; text-transform: uppercase; }}
+  .card .value {{ font-size: 18px; font-weight: 600; margin-top: 2px; }}
+
+  /* 헤더 레이아웃: 좌측 카드들 / 우측 7거래일 표 */
+  .layout-header {{ display: grid; grid-template-columns: 1fr 280px; gap: 14px; align-items: start; margin-bottom: 8px; }}
+  @media (max-width: 1100px) {{ .layout-header {{ grid-template-columns: 1fr; }} }}
+  .layout-right table {{ font-size: 11px; }}
+  .layout-right th, .layout-right td {{ padding: 4px 6px; }}
+  .layout-right h2 {{ margin-top: 0; }}
   .pos {{ color: #27ae60; }}
   .neg {{ color: #c0392b; }}
   .empty {{ text-align:center; color:#95a5a6; padding:12px !important; }}
 
   /* Top 5 카드 — 압축형 */
-  .top5-wrap {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 4px; }}
+  .top5-wrap {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-bottom: 4px; }}
   @media (max-width: 1100px) {{ .top5-wrap {{ grid-template-columns: repeat(3, 1fr); }} }}
   @media (max-width: 700px)  {{ .top5-wrap {{ grid-template-columns: repeat(2, 1fr); }} }}
   .top5-card {{
-    background: white; border-radius: 6px; padding: 8px 10px;
+    background: white; border-radius: 5px; padding: 6px 9px;
     border-top: 3px solid #3498db; box-shadow: 0 1px 2px rgba(0,0,0,0.05); position: relative;
   }}
   .top5-card .top5-rank {{
-    position: absolute; top: -6px; right: 8px; background: #3498db; color: white;
-    font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 8px;
+    position: absolute; top: -5px; right: 6px; background: #3498db; color: white;
+    font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 7px;
   }}
-  .top5-head {{ margin-bottom: 5px; }}
-  .top5-card .top5-name {{ font-size: 13px; font-weight: 600; line-height: 1.2; }}
-  .top5-card .top5-code {{ font-size: 10px; color: #95a5a6; font-family: Consolas, monospace; margin-top: 1px; }}
-  .top5-card .top5-price {{ font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }}
-  .top5-card .top5-change {{ font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; }}
+  .top5-head {{ margin-bottom: 3px; }}
+  .top5-card .top5-name {{ font-size: 12px; font-weight: 600; line-height: 1.2; }}
+  .top5-card .top5-code {{ font-size: 9px; color: #95a5a6; font-family: Consolas, monospace; margin-top: 1px; }}
+  .top5-card .top5-price {{ font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }}
+  .top5-card .top5-change {{ font-size: 10px; font-weight: 500; font-variant-numeric: tabular-nums; }}
   .top5-card .top5-change.pos {{ color: #c0392b; }}    /* 한국 관습: 상승=빨강 */
   .top5-card .top5-change.neg {{ color: #2980b9; }}    /* 하락=파랑 */
   .top5-card .top5-change.neutral {{ color: #7f8c8d; }}
-  .top5-card .top5-price-na {{ font-size: 11px; color: #95a5a6; font-style: italic; }}
-  .top5-card .top5-amount {{ font-size: 14px; font-weight: 700; margin: 5px 0 6px; }}
+  .top5-card .top5-price-na {{ font-size: 10px; color: #95a5a6; font-style: italic; }}
+  .top5-card .top5-amount {{ font-size: 13px; font-weight: 700; margin: 4px 0 5px; }}
   .btn-buy-big, .btn-sell-big {{
-    display: block; text-align: center; padding: 5px;
-    border-radius: 3px; text-decoration: none; font-size: 11px; font-weight: 600;
+    display: block; text-align: center; padding: 4px;
+    border-radius: 3px; text-decoration: none; font-size: 10px; font-weight: 600;
   }}
   .btn-buy-big {{ background: #e74c3c; color: white; }}
   .btn-buy-big:hover {{ background: #c0392b; }}
@@ -670,24 +678,30 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
 {data_freshness_note}
 <div class="meta">기준일자: <b>{trade_date}</b> &nbsp;|&nbsp; 생성: {generated_at} &nbsp;|&nbsp; 출처: KRX 공개 데이터</div>
 {no_data_banner}
-<h2>오늘 시장 수급 (연기금)</h2>
-<div class="summary">
-  <div class="card"><div class="label">매수 총합</div><div class="value">{_fmt_won(total_buy)}</div></div>
-  <div class="card"><div class="label">매도 총합</div><div class="value">{_fmt_won(total_sell)}</div></div>
-  <div class="card"><div class="label">순매수</div><div class="value {'pos' if total_net >= 0 else 'neg'}">{_fmt_won(total_net)}</div></div>
+<div class="layout-header">
+  <div class="layout-left">
+    <h2>오늘 시장 수급 (연기금)</h2>
+    <div class="summary">
+      <div class="card"><div class="label">매수 총합</div><div class="value">{_fmt_won(total_buy)}</div></div>
+      <div class="card"><div class="label">매도 총합</div><div class="value">{_fmt_won(total_sell)}</div></div>
+      <div class="card"><div class="label">순매수</div><div class="value {'pos' if total_net >= 0 else 'neg'}">{_fmt_won(total_net)}</div></div>
+    </div>
+
+    <h2>🏆 Top 5 순매수 (오늘)</h2>
+    <div class="top5-wrap">{top5_buy_html}</div>
+
+    <h2>🏆 Top 5 순매도 (오늘)</h2>
+    <div class="top5-wrap">{top5_sell_html}</div>
+  </div>
+
+  <div class="layout-right">
+    <h2>📅 최근 7거래일 (KOSPI)</h2>
+    <table>
+      <thead><tr><th>일자</th><th class="num">매수</th><th class="num">매도</th><th class="num">순매수</th></tr></thead>
+      <tbody>{recent_html}</tbody>
+    </table>
+  </div>
 </div>
-
-<h2>🏆 Top 5 순매수 (오늘)</h2>
-<div class="top5-wrap">{top5_buy_html}</div>
-
-<h2>🏆 Top 5 순매도 (오늘)</h2>
-<div class="top5-wrap">{top5_sell_html}</div>
-
-<h2>최근 7거래일 연기금 일별 수급 (KOSPI)</h2>
-<table>
-  <thead><tr><th>일자</th><th class="num">매수</th><th class="num">매도</th><th class="num">순매수</th></tr></thead>
-  <tbody>{recent_html}</tbody>
-</table>
 
 <div class="grid2">
   <div>
