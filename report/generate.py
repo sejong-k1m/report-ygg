@@ -408,6 +408,8 @@ def _ai_score(r: dict) -> float:
     score += delta * 0.02
     # 연속 매도일수 페널티
     score -= (r.get("consecutive_sell_days", 0) or 0) * 8
+    # DART 공시 점수 (호재/악재 키워드 매칭)
+    score += (r.get("dart_score", 0) or 0)
     return round(score, 1)
 
 

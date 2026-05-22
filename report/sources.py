@@ -406,7 +406,7 @@ def fetch_judal_both() -> dict:
 # ==========================================================================
 
 def fetch_auto(merge_judal: bool = True, merge_toss_prices: bool = True,
-                merge_toss_trend: bool = True) -> dict:
+                merge_toss_trend: bool = True, merge_dart: bool = True) -> dict:
     """
     자동 fetch 시도. 성공 시:
       {"trade_date": ..., "rows": [...], "source": "todayygg+toss+judal"}
@@ -484,6 +484,26 @@ def fetch_auto(merge_judal: bool = True, merge_toss_prices: bool = True,
         log.info("toss trading-trend today data merged: %d/%d", today_merged, len(rows))
         if today_merged > 0:
             sources_used.append("toss-realtime")
+
+    # 1.7) DART 공시 머지 (호재/악재 키워드 점수)
+    if merge_dart:
+        try:
+            from report import dart
+            codes = [r["stock_code"] for r in rows if r.get("stock_code")]
+            dart_map = dart.fetch_dart_scores(codes, days_back=7)
+            dart_merged = 0
+            for r in rows:
+                d = dart_map.get(r["stock_code"])
+                if d and (d["score"] != 0 or d["count"] > 0):
+                    r["dart_score"] = d["score"]
+                    r["dart_matched"] = d["matched"]
+                    r["dart_count"] = d["count"]
+                    dart_merged += 1
+            log.info("dart merged: %d/%d (with disclosures)", dart_merged, len(rows))
+            if dart_merged > 0:
+                sources_used.append("dart")
+        except Exception:
+            log.exception("dart merge failed (계속 진행)")
 
     # 2) judal 가치지표 머지 (종목명 기준)
     if merge_judal:

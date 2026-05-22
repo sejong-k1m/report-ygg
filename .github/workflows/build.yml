@@ -38,6 +38,7 @@ jobs:
         run: python -m report.generate --mode realtime
         env:
           TZ: Asia/Seoul
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
 
       - name: Build closing mode (after 16 KST)
         run: |
@@ -50,6 +51,7 @@ jobs:
           fi
         env:
           TZ: Asia/Seoul
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
 
       - name: Copy output to docs
         run: |
