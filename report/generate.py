@@ -508,7 +508,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
         elif td and td != "—":
             mode_subtitle = f"📊 마감 기준 — <b>{td}</b> 마감 데이터"
             data_freshness_note = (
-                f'<div class="freshness-note">📌 오늘 마감 데이터는 16시 이후 외부 사이트(todayygg)에 게시되면 자동 갱신됩니다. '
+                f'<div class="freshness-note">📌 오늘 마감 데이터는 16시 이후 자동 갱신됩니다. '
                 f'현재는 {td} 기준 데이터.</div>'
             )
         else:
@@ -632,7 +632,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
 </div>
 <div class="mode-subtitle">{mode_subtitle}</div>
 {data_freshness_note}
-<div class="meta">기준일자: <b>{trade_date}</b> &nbsp;|&nbsp; 생성: {generated_at} &nbsp;|&nbsp; 출처: {_esc(payload.get('source', 'unknown'))} (KRX 가공물)</div>
+<div class="meta">기준일자: <b>{trade_date}</b> &nbsp;|&nbsp; 생성: {generated_at} &nbsp;|&nbsp; 출처: KRX 공개 데이터</div>
 {no_data_banner}
 <h2>오늘 시장 수급 (연기금)</h2>
 <div class="summary">
