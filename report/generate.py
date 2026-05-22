@@ -719,6 +719,11 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   .filter-hint {{ font-size: 11px; color: #95a5a6; margin: 4px 0 8px; }}
   .footer {{ text-align: center; color: #95a5a6; font-size: 11px; margin-top: 24px; padding: 16px; }}
 
+  /* 커뮤니티 (utterances 댓글) */
+  .comments-section {{ margin-top: 24px; padding-top: 16px; border-top: 2px solid #ecf0f1; }}
+  .comments-section h2 {{ border: 0; padding: 0; }}
+  .comments-hint {{ font-size: 11px; color: #95a5a6; margin-bottom: 8px; }}
+
   /* 섹션 표시 토글 (todayygg 스타일 chip) */
   .layer-toggles {{
     display: flex; gap: 6px; flex-wrap: wrap;
@@ -795,6 +800,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   <label data-sec="today-top30"><input type="checkbox" checked> 오늘 Top 30</label>
   <label data-sec="cap-top30"><input type="checkbox" checked> 시총比 Top 30</label>
   <label data-sec="weekly-top30"><input type="checkbox" checked> 주간 누적</label>
+  <label data-sec="comments"><input type="checkbox" checked> 💬 커뮤니티</label>
 </div>
 {no_data_banner}
 <div class="layout-header">
@@ -923,6 +929,19 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
       <tbody>{weekly_sell_html}</tbody>
     </table>
   </div>
+</div>
+
+<div class="comments-section" data-section="comments">
+  <h2>💬 커뮤니티</h2>
+  <div class="comments-hint">GitHub 계정으로 로그인 후 댓글 작성 가능 · 페이지(실시간/마감)별 별도 스레드</div>
+  <script src="https://utteranc.es/client.js"
+          repo="sejong-k1m/report-ygg"
+          issue-term="pathname"
+          label="comments"
+          theme="github-light"
+          crossorigin="anonymous"
+          async>
+  </script>
 </div>
 
 <div class="footer">
