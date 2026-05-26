@@ -277,6 +277,34 @@ def query_recent_summaries(days: int = 7, market: str = "KOSPI") -> list:
     return [dict(r) for r in rows]  # 최신 날짜가 맨 위 (DESC 정렬 유지)
 
 
+def query_cumulative_top(top_n: int = 30, direction: str = "buy") -> list:
+    """
+    REPORT-YGG 시행 이후 전체 누적 (날짜 제한 없음).
+    DB의 pension_daily_report 전 일자 합산해서 종목별 net_amount sum.
+    """
+    order = "DESC" if direction == "buy" else "ASC"
+    conn = _db_conn()
+    rows = conn.execute(f"""
+        SELECT stock_code,
+               MAX(stock_name) AS stock_name,
+               MAX(market)     AS market,
+               SUM(buy_amount)  AS buy_sum,
+               SUM(sell_amount) AS sell_sum,
+               SUM(net_amount)  AS net_sum,
+               COUNT(DISTINCT trade_date) AS day_count,
+               MAX(market_cap)  AS market_cap,
+               MIN(trade_date)  AS first_date,
+               MAX(trade_date)  AS last_date
+        FROM pension_daily_report
+        GROUP BY stock_code
+        HAVING net_sum != 0
+        ORDER BY net_sum {order}
+        LIMIT ?
+    """, (top_n,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def query_weekly_top(days: int = 7, top_n: int = 30, direction: str = "buy") -> list:
     """
     최근 N거래일 누적 연기금 순매수/순매도 종목 Top.
@@ -474,15 +502,22 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
     total_net = (kospi_sum.get("net", 0) + kosdaq_sum.get("net", 0))
 
     # Top 매수/매도
-    top_buy = _table_top_rows(rows, "net_amount", desc=True, n=30)
-    top_sell = _table_top_rows(rows, "net_amount", desc=False, n=30)
+    top_buy_20 = _table_top_rows(rows, "net_amount", desc=True, n=20)
+    top_sell_20 = _table_top_rows(rows, "net_amount", desc=False, n=20)
+    top_buy_50 = _table_top_rows(rows, "net_amount", desc=True, n=50)
+    top_sell_50 = _table_top_rows(rows, "net_amount", desc=False, n=50)
     top_cap_buy = _table_top_rows(rows, "net_to_cap", desc=True, n=30)
     top_cap_sell = _table_top_rows(rows, "net_to_cap", desc=False, n=30)
+    # 호환용 — 기존 변수명 (Top 5 카드 등에서 사용)
+    top_buy = top_buy_20
+    top_sell = top_sell_20
 
-    # 7거래일 추이 + 주간 누적 Top
+    # 7거래일 추이 + 주간 누적 + 전체 누적
     recent = query_recent_summaries(7, "KOSPI")
     weekly_buy = query_weekly_top(days=7, top_n=30, direction="buy")
     weekly_sell = query_weekly_top(days=7, top_n=30, direction="sell")
+    cumul_buy = query_cumulative_top(top_n=30, direction="buy")
+    cumul_sell = query_cumulative_top(top_n=30, direction="sell")
 
     def _toss_btns(code):
         return (
@@ -532,12 +567,16 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
     empty_today = "<tr><td colspan='11' class='empty'>데이터 없음</td></tr>"
     empty_weekly = "<tr><td colspan='8' class='empty'>히스토리 누적 중 (며칠 빌드 후 표시)</td></tr>"
 
-    top_buy_html = "\n".join(_row_today(r) for r in top_buy) or empty_today
-    top_sell_html = "\n".join(_row_today(r) for r in top_sell) or empty_today
+    top_buy_html = "\n".join(_row_today(r) for r in top_buy_20) or empty_today
+    top_sell_html = "\n".join(_row_today(r) for r in top_sell_20) or empty_today
+    top_buy50_html = "\n".join(_row_today(r) for r in top_buy_50) or empty_today
+    top_sell50_html = "\n".join(_row_today(r) for r in top_sell_50) or empty_today
     top_cap_buy_html = "\n".join(_row_today(r, "net_to_cap") for r in top_cap_buy) or empty_today
     top_cap_sell_html = "\n".join(_row_today(r, "net_to_cap") for r in top_cap_sell) or empty_today
     weekly_buy_html = "\n".join(_row_weekly(r) for r in weekly_buy) or empty_weekly
     weekly_sell_html = "\n".join(_row_weekly(r) for r in weekly_sell) or empty_weekly
+    cumul_buy_html = "\n".join(_row_weekly(r) for r in cumul_buy) or empty_weekly
+    cumul_sell_html = "\n".join(_row_weekly(r) for r in cumul_sell) or empty_weekly
 
     recent_html = "".join(
         f"<tr><td>{_esc(r['trade_date'])}</td>"
@@ -945,10 +984,11 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   <span class="lt-label">표시:</span>
   <label data-sec="overview"><input type="checkbox" checked> 시장수급+Top5</label>
   <label data-sec="weekly7"><input type="checkbox" checked> 최근 7거래일</label>
-  <label data-sec="today-top30"><input type="checkbox" checked> 오늘 Top 30</label>
-  <label data-sec="cap-top30"><input type="checkbox" checked> 시총比 Top 30</label>
+  <label data-sec="today-top20"><input type="checkbox" checked> 오늘 Top 20</label>
+  <label data-sec="today-top50"><input type="checkbox"> 오늘 Top 50</label>
+  <label data-sec="cap-top30"><input type="checkbox" checked> 매수비율 Top 30</label>
   <label data-sec="weekly-top30"><input type="checkbox" checked> 주간 누적</label>
-  <label data-sec="all-stocks"><input type="checkbox"> 📜 전체 종목</label>
+  <label data-sec="cumul-top30"><input type="checkbox"> 전체 누적 (시행 이후)</label>
   <label data-sec="comments"><input type="checkbox" checked> 💬 커뮤니티</label>
 </div>
 {no_data_banner}
@@ -977,10 +1017,10 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   </div>
 </div>
 
-<div class="grid2" data-section="today-top30">
+<div class="grid2" data-section="today-top20">
   <div>
-    <h2>오늘 연기금 순매수 Top 30</h2>
-    <div class="filter-hint">컬럼 헤더 클릭 → 정렬 · AI 점수: 시총比×100 + 등락률×2 + 연속일×5 종합</div>
+    <h2>오늘 연기금 순매수 Top 20</h2>
+    <div class="filter-hint">컬럼 헤더 클릭 → 정렬 · AI 점수: 매수비율×100 + 등락률×2 + 연속일×5 + DART공시 종합</div>
     <table class="sortable">
       <thead><tr>
         <th>코드</th><th>종목명</th>
@@ -989,7 +1029,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
         <th class="num" data-sort="num">매도</th>
         <th class="num" data-sort="num">등락률</th>
         <th class="num" data-sort="num">현재가</th>
-        <th class="num" data-sort="num">시총比</th>
+        <th class="num" data-sort="num" title="시총 대비 순매수 비율 (큰 자금 유입 시그널)">매수비율</th>
         <th class="num" data-sort="num">AI</th>
         <th>시장</th><th>주문</th>
       </tr></thead>
@@ -997,7 +1037,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
     </table>
   </div>
   <div>
-    <h2>오늘 연기금 순매도 Top 30</h2>
+    <h2>오늘 연기금 순매도 Top 20</h2>
     <div class="filter-hint">컬럼 헤더 클릭 → 정렬 · AI 점수 음수 = 매도 강세</div>
     <table class="sortable">
       <thead><tr>
@@ -1007,7 +1047,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
         <th class="num" data-sort="num">매도</th>
         <th class="num" data-sort="num">등락률</th>
         <th class="num" data-sort="num">현재가</th>
-        <th class="num" data-sort="num">시총比</th>
+        <th class="num" data-sort="num" title="시총 대비 순매수 비율 (큰 자금 유입 시그널)">매수비율</th>
         <th class="num" data-sort="num">AI</th>
         <th>시장</th><th>주문</th>
       </tr></thead>
@@ -1018,7 +1058,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
 
 <div class="grid2" data-section="cap-top30">
   <div>
-    <h2>시총 대비 순매수 Top 30</h2>
+    <h2>매수비율 Top 30 (시총 대비 순매수 큰 순)</h2>
     <table class="sortable">
       <thead><tr>
         <th>코드</th><th>종목명</th>
@@ -1027,7 +1067,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
         <th class="num" data-sort="num">매도</th>
         <th class="num" data-sort="num">등락률</th>
         <th class="num" data-sort="num">현재가</th>
-        <th class="num" data-sort="num">시총比</th>
+        <th class="num" data-sort="num" title="시총 대비 순매수 비율 (큰 자금 유입 시그널)">매수비율</th>
         <th class="num" data-sort="num">AI</th>
         <th>시장</th><th>주문</th>
       </tr></thead>
@@ -1035,7 +1075,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
     </table>
   </div>
   <div>
-    <h2>시총 대비 순매도 Top 30</h2>
+    <h2>매수비율 Top 30 (시총 대비 순매도 큰 순)</h2>
     <table class="sortable">
       <thead><tr>
         <th>코드</th><th>종목명</th>
@@ -1044,7 +1084,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
         <th class="num" data-sort="num">매도</th>
         <th class="num" data-sort="num">등락률</th>
         <th class="num" data-sort="num">현재가</th>
-        <th class="num" data-sort="num">시총比</th>
+        <th class="num" data-sort="num" title="시총 대비 순매수 비율 (큰 자금 유입 시그널)">매수비율</th>
         <th class="num" data-sort="num">AI</th>
         <th>시장</th><th>주문</th>
       </tr></thead>
@@ -1080,6 +1120,74 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
         <th>시장</th><th>주문</th>
       </tr></thead>
       <tbody>{weekly_sell_html}</tbody>
+    </table>
+  </div>
+</div>
+
+<div class="grid2" data-section="today-top50" style="display:none;">
+  <div>
+    <h2>📊 오늘 연기금 순매수 Top 50</h2>
+    <table class="sortable">
+      <thead><tr>
+        <th>코드</th><th>종목명</th>
+        <th class="num" data-sort="num">순매수</th>
+        <th class="num" data-sort="num">매수</th>
+        <th class="num" data-sort="num">매도</th>
+        <th class="num" data-sort="num">등락률</th>
+        <th class="num" data-sort="num">현재가</th>
+        <th class="num" data-sort="num" title="시총 대비 순매수 비율">매수비율</th>
+        <th class="num" data-sort="num">AI</th>
+        <th>시장</th><th>주문</th>
+      </tr></thead>
+      <tbody>{top_buy50_html}</tbody>
+    </table>
+  </div>
+  <div>
+    <h2>📊 오늘 연기금 순매도 Top 50</h2>
+    <table class="sortable">
+      <thead><tr>
+        <th>코드</th><th>종목명</th>
+        <th class="num" data-sort="num">순매도</th>
+        <th class="num" data-sort="num">매수</th>
+        <th class="num" data-sort="num">매도</th>
+        <th class="num" data-sort="num">등락률</th>
+        <th class="num" data-sort="num">현재가</th>
+        <th class="num" data-sort="num" title="시총 대비 순매수 비율">매수비율</th>
+        <th class="num" data-sort="num">AI</th>
+        <th>시장</th><th>주문</th>
+      </tr></thead>
+      <tbody>{top_sell50_html}</tbody>
+    </table>
+  </div>
+</div>
+
+<div class="grid2" data-section="cumul-top30" style="display:none;">
+  <div>
+    <h2>🏛 전체 누적 순매수 Top 30 <small style="font-size:11px;color:#7f8c8d;">(REPORT-YGG 시행 이후 합산)</small></h2>
+    <table class="sortable">
+      <thead><tr>
+        <th>코드</th><th>종목명</th>
+        <th class="num" data-sort="num">누적순매수</th>
+        <th class="num" data-sort="num">누적매수</th>
+        <th class="num" data-sort="num">누적매도</th>
+        <th class="num" data-sort="num">거래일수</th>
+        <th>시장</th><th>주문</th>
+      </tr></thead>
+      <tbody>{cumul_buy_html}</tbody>
+    </table>
+  </div>
+  <div>
+    <h2>🏛 전체 누적 순매도 Top 30 <small style="font-size:11px;color:#7f8c8d;">(REPORT-YGG 시행 이후 합산)</small></h2>
+    <table class="sortable">
+      <thead><tr>
+        <th>코드</th><th>종목명</th>
+        <th class="num" data-sort="num">누적순매도</th>
+        <th class="num" data-sort="num">누적매수</th>
+        <th class="num" data-sort="num">누적매도</th>
+        <th class="num" data-sort="num">거래일수</th>
+        <th>시장</th><th>주문</th>
+      </tr></thead>
+      <tbody>{cumul_sell_html}</tbody>
     </table>
   </div>
 </div>
