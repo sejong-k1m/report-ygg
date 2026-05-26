@@ -861,6 +861,15 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   .reply-compose input {{ flex: 1; padding: 3px 6px; border: 1px solid #ddd; border-radius: 3px; font-size: 11px; }}
   .reply-compose button {{ background: #3498db; color: white; border: 0; padding: 3px 8px; border-radius: 3px;
                            font-size: 10px; cursor: pointer; }}
+  /* 수정/삭제 버튼 */
+  .thread-meta {{ display: inline-flex; gap: 6px; align-items: center; }}
+  .thread-actions, .reply-actions {{ display: inline-flex; gap: 4px; }}
+  .thread-actions a, .reply-actions a {{
+    cursor: pointer; color: #95a5a6; font-size: 11px; padding: 0 2px;
+  }}
+  .thread-actions a:hover {{ color: #16a085; }}
+  .th-del:hover, .rp-del:hover {{ color: #c0392b !important; }}
+  .reply-actions {{ margin-left: 4px; }}
 
   /* 섹션 표시 토글 (todayygg 스타일 chip) */
   .layer-toggles {{
@@ -939,6 +948,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   <label data-sec="today-top30"><input type="checkbox" checked> 오늘 Top 30</label>
   <label data-sec="cap-top30"><input type="checkbox" checked> 시총比 Top 30</label>
   <label data-sec="weekly-top30"><input type="checkbox" checked> 주간 누적</label>
+  <label data-sec="all-stocks"><input type="checkbox"> 📜 전체 종목</label>
   <label data-sec="comments"><input type="checkbox" checked> 💬 커뮤니티</label>
 </div>
 {no_data_banner}
@@ -1164,7 +1174,8 @@ document.querySelectorAll('table.sortable th[data-sort]').forEach(th => {{
 import {{ initializeApp }} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import {{ getAuth, signInAnonymously }} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 import {{
-  getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot, serverTimestamp
+  getFirestore, collection, addDoc, doc, deleteDoc, updateDoc,
+  query, orderBy, limit, onSnapshot, serverTimestamp
 }} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
 const firebaseConfig = {{
@@ -1333,10 +1344,19 @@ function renderThread(id, data) {{
   const div = document.createElement('div');
   div.className = 'thread-item';
   div.id = 'th-' + id;
+  div.dataset.rawText = data.text || '';
+  div.dataset.uid = data.uid || '';
+  const isMine = currentUid && data.uid === currentUid;
+  const editBtns = isMine
+    ? `<span class="thread-actions"><a class="th-edit" data-id="${{id}}">✏</a><a class="th-del" data-id="${{id}}">🗑</a></span>`
+    : '';
   div.innerHTML = `
     <div class="thread-head">
       <span class="thread-nick">${{(data.nickname || '익명').replace(/[<>]/g,'')}}</span>
-      <span class="thread-time">${{fmtTime(data.createdAt)}}</span>
+      <span class="thread-meta">
+        <span class="thread-time">${{fmtTime(data.createdAt)}}${{data.editedAt ? ' (수정)' : ''}}</span>
+        ${{editBtns}}
+      </span>
     </div>
     <div class="thread-text">${{renderText(data.text || '')}}</div>
     <span class="reply-toggle" data-id="${{id}}">↳ 답글</span>
@@ -1368,7 +1388,14 @@ function attachReplyHandlers(threadEl, threadId) {{
           const r = d.data();
           const ri = document.createElement('div');
           ri.className = 'reply-item';
-          ri.innerHTML = `<span class="reply-nick">${{(r.nickname || '익명').replace(/[<>]/g,'')}}</span>${{renderText(r.text || '')}}`;
+          ri.dataset.rawText = r.text || '';
+          ri.dataset.replyId = d.id;
+          ri.dataset.threadId = threadId;
+          const isMine = currentUid && r.uid === currentUid;
+          const actions = isMine
+            ? `<span class="reply-actions"><a class="rp-edit">✏</a><a class="rp-del">🗑</a></span>`
+            : '';
+          ri.innerHTML = `<span class="reply-nick">${{(r.nickname || '익명').replace(/[<>]/g,'')}}</span><span class="reply-text">${{renderText(r.text || '')}}</span>${{actions}}`;
           rl.appendChild(ri);
         }});
       }});
@@ -1437,10 +1464,63 @@ function renderThreadList() {{
 }}
 
 // @멘션 클릭 → 필터 설정 (이벤트 위임)
-threadList.addEventListener('click', e => {{
+threadList.addEventListener('click', async e => {{
+  // 멘션 필터
   const m = e.target.closest('.mention');
   if (m && m.dataset.stock) {{
     setStockFilter(m.dataset.stock);
+    return;
+  }}
+  // 글 수정
+  const edit = e.target.closest('.th-edit');
+  if (edit) {{
+    const id = edit.dataset.id;
+    const item = document.getElementById('th-' + id);
+    const oldText = item.dataset.rawText || '';
+    const newText = prompt('글 수정:', oldText);
+    if (newText === null || newText.trim() === oldText) return;
+    try {{
+      await updateDoc(doc(db, 'threads', id), {{
+        text: newText.trim().slice(0, 1000),
+        mentions: extractMentions(newText),
+        editedAt: serverTimestamp()
+      }});
+    }} catch (err) {{ alert('수정 실패: ' + err.message); }}
+    return;
+  }}
+  // 글 삭제
+  const del = e.target.closest('.th-del');
+  if (del) {{
+    if (!confirm('이 글을 삭제하시겠습니까? (답글 포함)')) return;
+    try {{
+      await deleteDoc(doc(db, 'threads', del.dataset.id));
+    }} catch (err) {{ alert('삭제 실패: ' + err.message); }}
+    return;
+  }}
+  // 답글 수정
+  const redit = e.target.closest('.rp-edit');
+  if (redit) {{
+    const ri = redit.closest('.reply-item');
+    const oldText = ri.dataset.rawText || '';
+    const newText = prompt('답글 수정:', oldText);
+    if (newText === null || newText.trim() === oldText) return;
+    try {{
+      await updateDoc(doc(db, 'threads', ri.dataset.threadId, 'replies', ri.dataset.replyId), {{
+        text: newText.trim().slice(0, 500),
+        editedAt: serverTimestamp()
+      }});
+    }} catch (err) {{ alert('수정 실패: ' + err.message); }}
+    return;
+  }}
+  // 답글 삭제
+  const rdel = e.target.closest('.rp-del');
+  if (rdel) {{
+    if (!confirm('이 답글을 삭제하시겠습니까?')) return;
+    const ri = rdel.closest('.reply-item');
+    try {{
+      await deleteDoc(doc(db, 'threads', ri.dataset.threadId, 'replies', ri.dataset.replyId));
+    }} catch (err) {{ alert('삭제 실패: ' + err.message); }}
+    return;
   }}
 }});
 

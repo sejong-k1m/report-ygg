@@ -69,6 +69,49 @@ def fetch_todayygg_csv() -> Optional[str]:
         return None
 
 
+def parse_todayygg_csv(csv_text: str) -> list:
+    """todayygg CSV → list of standard row dict."""
+    import csv as csvlib
+    import io
+    if not csv_text:
+        return []
+    reader = csvlib.DictReader(io.StringIO(csv_text))
+    rows = []
+    for r in reader:
+        code = (r.get("symbol") or "").strip()
+        if not code or not code.isdigit():
+            continue
+        rows.append({
+            "stock_code": code,
+            "stock_name": r.get("name", ""),
+            "market": r.get("market", ""),
+            "buy_amount":  _to_int(r.get("buy_amount")),
+            "sell_amount": _to_int(r.get("sell_amount")),
+            "net_amount":  _to_int(r.get("net_buy_amount")),
+            "buy_qty":  _to_int(r.get("buy_quantity")),
+            "sell_qty": _to_int(r.get("sell_quantity")),
+            "net_qty":  _to_int(r.get("net_buy_quantity")),
+            "market_cap": _to_int(r.get("market_cap")),
+            "close_price": _to_int(r.get("close_price")),
+            "today_buy_avg":   _to_float(r.get("today_buy_average_price")),
+            "period_buy_avg":  _to_float(r.get("period_buy_average_price")),
+            "cumulative_net_amount": _to_int(r.get("cumulative_net_buy_amount")),
+            "consecutive_sell_days": _to_int(r.get("consecutive_sell_days")),
+            "period_start_date": r.get("period_start_date", ""),
+            "period_end_date": r.get("period_end_date", ""),
+            "delta_buy_amount":  _to_int(r.get("delta_buy_amount_vs_yesterday")),
+            "delta_sell_amount": _to_int(r.get("delta_sell_amount_vs_yesterday")),
+            "delta_net_amount":  _to_int(r.get("delta_net_buy_amount_vs_yesterday")),
+            "net_vs_prev_vol_ratio":  _to_float(r.get("net_buy_vs_prev_volume_ratio")),
+            "net_vs_prev_val_ratio":  _to_float(r.get("net_buy_amount_vs_prev_trade_value_ratio")),
+            "sector":  r.get("sector", ""),
+            "industry": r.get("industry", ""),
+            "source": "todayygg-csv",
+        })
+    log.info("todayygg CSV parsed: %d rows", len(rows))
+    return rows
+
+
 def _to_int(v) -> int:
     if v is None or v == "":
         return 0
@@ -425,6 +468,23 @@ def fetch_auto(merge_judal: bool = True, merge_toss_prices: bool = True,
     if not rows:
         return None
     sources_used = ["todayygg"]
+
+    # CSV 로 전체 종목 보강 (Top 30 외 종목까지)
+    try:
+        csv_text = fetch_todayygg_csv()
+        if csv_text:
+            csv_rows = parse_todayygg_csv(csv_text)
+            existing_codes = {r["stock_code"] for r in rows}
+            added = 0
+            for cr in csv_rows:
+                if cr["stock_code"] not in existing_codes:
+                    rows.append(cr)
+                    added += 1
+            log.info("todayygg CSV: +%d 종목 보강 (총 %d)", added, len(rows))
+            if added > 0:
+                sources_used.append("csv-all")
+    except Exception:
+        log.exception("todayygg CSV merge failed (계속 진행)")
 
     # 1) Toss 가격/시총/등락률 머지
     if merge_toss_prices:
