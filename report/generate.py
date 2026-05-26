@@ -422,6 +422,73 @@ def _ai_score_breakdown(r: dict) -> dict:
     }
 
 
+def _ai_score_explain(r: dict, breakdown: dict) -> dict:
+    """AI 점수 자연어 근거 + 투자 추천."""
+    total = breakdown["total"]
+    reasons = []
+    net_to_cap = r.get("net_to_cap", 0) or 0
+    if breakdown["cap"] >= 30:
+        reasons.append(f"🔥 매수비율 +{net_to_cap:.3f}% — 시총 대비 강한 자금 유입 (+{breakdown['cap']:.0f})")
+    elif breakdown["cap"] >= 10:
+        reasons.append(f"📈 매수비율 +{net_to_cap:.3f}% — 적극 매수 (+{breakdown['cap']:.0f})")
+    elif breakdown["cap"] <= -30:
+        reasons.append(f"❄️ 매도비율 {net_to_cap:.3f}% — 시총 대비 강한 자금 이탈 ({breakdown['cap']:.0f})")
+    elif breakdown["cap"] <= -10:
+        reasons.append(f"📉 매도비율 {net_to_cap:.3f}% — 매도 우세 ({breakdown['cap']:.0f})")
+    if breakdown["period"] > 0:
+        d = _period_days(r)
+        reasons.append(f"🔥 {d}일 연속 활발 매수 (+{breakdown['period']:.0f})")
+    if breakdown["sell_penalty"] <= -16:
+        d = r.get("consecutive_sell_days", 0) or 0
+        reasons.append(f"❄️ {d}일 연속 매도 — 강한 매도세 ({breakdown['sell_penalty']:.0f})")
+    elif breakdown["sell_penalty"] <= -8:
+        d = r.get("consecutive_sell_days", 0) or 0
+        reasons.append(f"❄️ {d}일 연속 매도 ({breakdown['sell_penalty']:.0f})")
+    if breakdown["dart"] >= 10:
+        matched = r.get("dart_matched") or []
+        kws = ", ".join(matched[:3]) if matched else "호재 공시"
+        reasons.append(f"📜 DART 호재: {kws} (+{breakdown['dart']:.0f})")
+    elif breakdown["dart"] <= -10:
+        matched = r.get("dart_matched") or []
+        kws = ", ".join(matched[:3]) if matched else "악재 공시"
+        reasons.append(f"⚠ DART 악재: {kws} ({breakdown['dart']:.0f})")
+    change = r.get("change_rate", 0) or 0
+    if breakdown["change"] >= 5:
+        reasons.append(f"📈 오늘 등락률 +{change:.2f}% — 강한 상승 (+{breakdown['change']:.1f})")
+    elif breakdown["change"] <= -5:
+        reasons.append(f"📉 오늘 등락률 {change:.2f}% — 큰 하락 ({breakdown['change']:.1f})")
+    ts = r.get("trading_strength", 0) or 0
+    if breakdown["strength"] >= 5:
+        reasons.append(f"💪 거래량 강도 {ts:.0f} — 평소 대비 활발 (+{breakdown['strength']:.1f})")
+    if breakdown["delta"] >= 3:
+        reasons.append(f"📊 전일 대비 순매수 확대 (+{breakdown['delta']:.1f})")
+    elif breakdown["delta"] <= -3:
+        reasons.append(f"📊 전일 대비 순매수 축소 ({breakdown['delta']:.1f})")
+    if breakdown["cumul"] >= 2:
+        cumul_eok = (r.get("cumulative_net_amount") or 0) / 100_000_000
+        reasons.append(f"📅 활발 기간 누적 +{cumul_eok:,.0f}억 매수 (+{breakdown['cumul']:.1f})")
+    elif breakdown["cumul"] <= -2:
+        cumul_eok = (r.get("cumulative_net_amount") or 0) / 100_000_000
+        reasons.append(f"📅 활발 기간 누적 {cumul_eok:,.0f}억 매도 ({breakdown['cumul']:.1f})")
+    if not reasons:
+        reasons.append("의미 있는 시그널 없음 (중립 상태)")
+    if total >= 50:
+        recommend, level = "🟢 강한 매수 시그널 — 다중 호재. 분할 매수 권장", "strong-buy"
+    elif total >= 20:
+        recommend, level = "🟢 매수 우세 — 긍정 시그널 다수", "buy"
+    elif total >= 5:
+        recommend, level = "🟡 약한 매수 — 추가 확인 후 결정", "weak-buy"
+    elif total >= -5:
+        recommend, level = "⚪ 중립 — 명확한 방향성 없음", "neutral"
+    elif total >= -20:
+        recommend, level = "🔴 매도 우세 — 부정 시그널", "sell"
+    elif total >= -50:
+        recommend, level = "🔴 강한 매도 — 매도세 압력", "strong-sell"
+    else:
+        recommend, level = "🔴 매우 강한 매도 — 분명한 하방 시그널", "very-sell"
+    return {"reasons": reasons, "recommend": recommend, "level": level}
+
+
 def _ai_score(r: dict) -> float:
     """
     종합 점수 (가중 합산, 8개 변수):
@@ -640,6 +707,40 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
             f"</tr>"
         )
     ai_html = "\n".join(_row_ai(r) for r in ai_rows_sorted) or "<tr><td colspan='15' class='empty'>데이터 없음</td></tr>"
+
+    # AI 점수 상세 카드 (Top 매수 30 + Top 매도 10)
+    def _ai_card(r):
+        bd = _ai_score_breakdown(r)
+        exp = _ai_score_explain(r, bd)
+        total = bd["total"]
+        close = r.get("close_price", 0)
+        change = r.get("change_rate", 0)
+        net = r.get("net_amount", 0)
+        reasons_html = "".join(f"<li>{_esc(reason)}</li>" for reason in exp["reasons"])
+        return (
+            f"<div class='ai-card ai-{exp['level']}'>"
+            f"  <div class='ai-card-head'>"
+            f"    <div class='ai-card-name'>{_esc(r['stock_name'])} "
+            f"      <span class='ai-card-code'>{_esc(r['stock_code'])} · {_esc(r.get('market',''))}</span></div>"
+            f"    <div class='ai-card-score'>{_ai_score_label(total)}</div>"
+            f"  </div>"
+            f"  <div class='ai-card-meta'>"
+            f"    현재가 {close:,} · 등락률 {_fmt_pct(change)} · 순매수 {_fmt_won(net)}"
+            f"  </div>"
+            f"  <div class='ai-card-recommend'>{_esc(exp['recommend'])}</div>"
+            f"  <div class='ai-card-reasons'><b>점수 산출 근거</b><ul>{reasons_html}</ul></div>"
+            f"  <div class='ai-card-actions'>"
+            f"    <a href='{_toss_buy_url(r['stock_code'])}' target='_blank' class='btn-buy-big'>토스 매수창</a>"
+            f"    <a href='{_toss_sell_url(r['stock_code'])}' target='_blank' class='btn-sell-big'>토스 매도창</a>"
+            f"  </div>"
+            f"</div>"
+        )
+
+    # 매수 시그널 Top 20 + 매도 시그널 Top 10
+    ai_buy_cards = [r for r in ai_rows_sorted if _ai_score(r) > 0][:20]
+    ai_sell_cards = sorted([r for r in ai_rows_sorted if _ai_score(r) < 0], key=_ai_score)[:10]
+    ai_buy_cards_html = "".join(_ai_card(r) for r in ai_buy_cards) or "<div class='empty'>매수 시그널 종목 없음</div>"
+    ai_sell_cards_html = "".join(_ai_card(r) for r in ai_sell_cards) or "<div class='empty'>매도 시그널 종목 없음</div>"
 
     recent_html = "".join(
         f"<tr><td>{_esc(r['trade_date'])}</td>"
@@ -876,6 +977,41 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   .ai-page th, .ai-page td {{ padding: 4px 5px; font-size: 10px; }}
   .ai-table th[title] {{ cursor: help; }}
 
+  /* AI 상세 카드 */
+  .ai-cards-wrap {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }}
+  @media (max-width: 900px) {{ .ai-cards-wrap {{ grid-template-columns: 1fr; }} }}
+  .ai-card {{
+    background: white; border-radius: 8px; padding: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    border-left: 5px solid #95a5a6;
+  }}
+  .ai-card.ai-strong-buy {{ border-left-color: #c0392b; }}
+  .ai-card.ai-buy        {{ border-left-color: #e74c3c; }}
+  .ai-card.ai-weak-buy   {{ border-left-color: #f39c12; }}
+  .ai-card.ai-neutral    {{ border-left-color: #95a5a6; }}
+  .ai-card.ai-sell       {{ border-left-color: #3498db; }}
+  .ai-card.ai-strong-sell{{ border-left-color: #2980b9; }}
+  .ai-card.ai-very-sell  {{ border-left-color: #2471a3; }}
+  .ai-card-head {{ display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }}
+  .ai-card-name {{ font-size: 15px; font-weight: 700; }}
+  .ai-card-code {{ font-size: 11px; color: #95a5a6; font-family: Consolas, monospace; font-weight: 400; }}
+  .ai-card-score {{ font-size: 13px; }}
+  .ai-card-meta {{ font-size: 11px; color: #7f8c8d; margin-bottom: 6px; font-variant-numeric: tabular-nums; }}
+  .ai-card-recommend {{
+    background: #f8f9fa; padding: 8px 10px; border-radius: 4px;
+    font-size: 12px; font-weight: 600; margin-bottom: 8px;
+  }}
+  .ai-card-reasons {{ font-size: 11px; color: #2c3e50; }}
+  .ai-card-reasons ul {{ margin: 4px 0 0; padding-left: 18px; }}
+  .ai-card-reasons li {{ margin-bottom: 2px; line-height: 1.4; }}
+  .ai-card-actions {{ display: flex; gap: 6px; margin-top: 8px; }}
+  .ai-card-actions a {{ flex: 1; font-size: 11px; padding: 5px; }}
+  .ai-footnote {{
+    margin-top: 24px; padding: 12px; background: #fef9e7;
+    border: 1px solid #f1c40f; border-radius: 4px;
+    font-size: 11px; color: #7f6e1f;
+  }}
+
   /* PDF 다운로드 버튼 */
   .pdf-btn {{
     background: #16a085; color: white; border: 0; padding: 6px 12px;
@@ -1099,6 +1235,17 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   </tr></thead>
   <tbody>''' + ai_html + '''</tbody>
 </table>
+
+<h2 style="margin-top:24px;">🟢 매수 시그널 Top 20 — 상세 분석</h2>
+<div class="ai-cards-wrap">''' + ai_buy_cards_html + '''</div>
+
+<h2 style="margin-top:24px;">🔴 매도 시그널 Top 10 — 상세 분석</h2>
+<div class="ai-cards-wrap">''' + ai_sell_cards_html + '''</div>
+
+<div class="ai-footnote">
+  ⚠ AI 점수는 머신러닝이 아닌 가중합 휴리스틱입니다. 백테스팅 안 됨.
+  투자 판단 보조 지표로만 활용. 모든 매매 결정은 본인 책임.
+</div>
 </div>''') if mode == 'ai' else ''}
 
 <div class="layout-header" {'style="display:none"' if mode == 'ai' else ''}>
