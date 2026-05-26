@@ -392,6 +392,36 @@ def _consecutive_label(r: dict) -> str:
     return ""
 
 
+def _ai_score_breakdown(r: dict) -> dict:
+    """
+    AI 점수의 각 변수 기여도 분해. AI 점수 페이지에서 표시용.
+    return: {component_name: score_contribution, ..., "total": 합계}
+    """
+    cap = round((r.get("net_to_cap", 0) or 0) * 100, 1)
+    val_ratio = round((r.get("net_vs_prev_val_ratio") or 0) * 5, 1)
+    change = round((r.get("change_rate", 0) or 0) * 1.5, 1)
+    ts = r.get("trading_strength", 0) or 0
+    strength = round((ts - 100) * 0.05, 1) if ts > 0 else 0.0
+    period = round(_period_days(r) * 4, 1) if r.get("net_amount", 0) > 0 else 0.0
+    cumul = round(((r.get("cumulative_net_amount") or 0) / 100_000_000) * 0.005, 1)
+    delta = round(((r.get("delta_net_amount") or 0) / 100_000_000) * 0.02, 1)
+    sell_penalty = round(-(r.get("consecutive_sell_days", 0) or 0) * 8, 1)
+    dart = r.get("dart_score", 0) or 0
+    total = cap + val_ratio + change + strength + period + cumul + delta + sell_penalty + dart
+    return {
+        "cap": cap,                # 매수비율 × 100
+        "val_ratio": val_ratio,    # 전일거래액 비율 × 5
+        "change": change,          # 등락률 × 1.5
+        "strength": strength,      # 거래량 강도 × 0.05
+        "period": period,          # 활발 기간 × 4
+        "cumul": cumul,            # 누적 순매수 × 0.005
+        "delta": delta,            # 전일대비 변화 × 0.02
+        "sell_penalty": sell_penalty,  # 연속매도 × -8
+        "dart": dart,              # DART 공시
+        "total": round(total, 1),
+    }
+
+
 def _ai_score(r: dict) -> float:
     """
     종합 점수 (가중 합산, 8개 변수):
@@ -578,6 +608,39 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
     cumul_buy_html = "\n".join(_row_weekly(r) for r in cumul_buy) or empty_weekly
     cumul_sell_html = "\n".join(_row_weekly(r) for r in cumul_sell) or empty_weekly
 
+    # AI 점수 페이지용 — 전 종목 점수 + 분해
+    ai_rows_sorted = sorted(rows, key=_ai_score, reverse=True)
+    def _row_ai(r):
+        bd = _ai_score_breakdown(r)
+        total = bd["total"]
+        chg = r.get("change_rate", 0)
+        def _cell(v):
+            if v == 0:
+                return "<td class='num' style='color:#bdc3c7;'>0</td>"
+            cls = "pos" if v > 0 else "neg"
+            return f"<td class='num {cls}' data-value='{v}'>{v:+.1f}</td>"
+        return (
+            f"<tr>"
+            f"<td class='code'>{_esc(r['stock_code'])}</td>"
+            f"<td class='name'>{_esc(r['stock_name'])}</td>"
+            f"<td class='num' data-value='{total}'>{_ai_score_label(total)}</td>"
+            f"{_cell(bd['cap'])}"
+            f"{_cell(bd['val_ratio'])}"
+            f"{_cell(bd['change'])}"
+            f"{_cell(bd['strength'])}"
+            f"{_cell(bd['period'])}"
+            f"{_cell(bd['cumul'])}"
+            f"{_cell(bd['delta'])}"
+            f"{_cell(bd['sell_penalty'])}"
+            f"{_cell(bd['dart'])}"
+            f"<td class='num' data-value='{r.get('net_amount',0)}'>{_fmt_won(r.get('net_amount',0))}</td>"
+            f"<td class='num {'pos' if chg>0 else ('neg' if chg<0 else '')}' data-value='{chg}'>{_fmt_pct(chg)}</td>"
+            f"<td class='market'>{_esc(r.get('market',''))}</td>"
+            f"<td class='actions'>{_toss_btns(r['stock_code'])}</td>"
+            f"</tr>"
+        )
+    ai_html = "\n".join(_row_ai(r) for r in ai_rows_sorted) or "<tr><td colspan='15' class='empty'>데이터 없음</td></tr>"
+
     recent_html = "".join(
         f"<tr><td>{_esc(r['trade_date'])}</td>"
         f"<td class='num'>{_fmt_won(r['buy_total'])}</td>"
@@ -643,6 +706,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
     generated_at = now.strftime("%Y-%m-%d %H:%M:%S")
     mode_active_rt = "active" if mode == "realtime" else ""
     mode_active_cl = "active" if mode == "closing" else ""
+    mode_active_ai = "active" if mode == "ai" else ""
     auto_refresh_meta = '<meta http-equiv="refresh" content="3600">' if mode == "realtime" else ''
 
     # 마지막 업데이트 + 다음 예정 시각 (실시간 모드)
@@ -681,6 +745,19 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
                 f"· 업데이트 주기: 5분"
             )
         data_freshness_note = ""
+    elif mode == "ai":
+        mode_subtitle = (
+            f"🤖 AI 점수 — 종목별 점수 + 변수별 기여도 분해 "
+            f"· 마지막 빌드: <b>{last_update_hhmm}</b>"
+        )
+        data_freshness_note = (
+            '<div class="freshness-note">'
+            '📊 AI 점수는 <b>매수비율 ×100 + 전일거래비율 ×5 + 등락률 ×1.5 + '
+            '거래량강도 ×0.05 + 활발기간 ×4 + 누적 ×0.005 + 전일대비 ×0.02 '
+            '+ 연속매도 ×−8 + DART공시</b> 의 가중합입니다. '
+            '머신러닝 아닌 휴리스틱이며 투자 판단 보조 지표일 뿐입니다.'
+            '</div>'
+        )
     else:  # closing
         # 데이터의 trade_date가 오늘이면 ✅, 아니면 직전 영업일 데이터 안내
         td = str(trade_date)
@@ -792,6 +869,12 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   @media (max-width: 1000px) {{ .grid2 {{ grid-template-columns: 1fr; }} }}
   .filter-hint {{ font-size: 11px; color: #95a5a6; margin: 4px 0 8px; }}
   .footer {{ text-align: center; color: #95a5a6; font-size: 11px; margin-top: 24px; padding: 16px; }}
+
+  /* AI 점수 페이지 */
+  .ai-page {{ margin-top: 8px; }}
+  .ai-page table {{ font-size: 10px; }}
+  .ai-page th, .ai-page td {{ padding: 4px 5px; font-size: 10px; }}
+  .ai-table th[title] {{ cursor: help; }}
 
   /* PDF 다운로드 버튼 */
   .pdf-btn {{
@@ -974,6 +1057,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
 <div class="nav-tabs">
   <a href="realtime.html" class="{mode_active_rt}">⏱ 실시간 업데이트</a>
   <a href="closing.html" class="{mode_active_cl}">📊 마감 기준</a>
+  <a href="ai.html" class="{mode_active_ai}">🤖 AI 점수</a>
   <button class="pdf-btn" onclick="window.print()">📥 PDF 저장</button>
 </div>
 <div class="mode-subtitle">{mode_subtitle}</div>
@@ -992,7 +1076,32 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   <label data-sec="comments"><input type="checkbox" checked> 💬 커뮤니티</label>
 </div>
 {no_data_banner}
-<div class="layout-header">
+
+{('''<div class="ai-page">
+<h2>🤖 종목별 AI 점수 + 변수 기여도</h2>
+<div class="filter-hint">컬럼 헤더 클릭 → 정렬 · 각 변수가 총점에 얼마나 기여했는지 확인 가능</div>
+<table class="sortable ai-table">
+  <thead><tr>
+    <th>코드</th><th>종목명</th>
+    <th class="num" data-sort="num">총점</th>
+    <th class="num" data-sort="num" title="매수비율 × 100">매수비율</th>
+    <th class="num" data-sort="num" title="전일거래액 비율 × 5">전일거래</th>
+    <th class="num" data-sort="num" title="등락률 × 1.5">등락률</th>
+    <th class="num" data-sort="num" title="거래량강도 × 0.05">거래량</th>
+    <th class="num" data-sort="num" title="활발 기간 × 4 (매수 시)">활발일</th>
+    <th class="num" data-sort="num" title="누적 순매수 × 0.005">누적</th>
+    <th class="num" data-sort="num" title="전일대비 × 0.02">전일比</th>
+    <th class="num" data-sort="num" title="연속 매도일수 × -8">매도페널티</th>
+    <th class="num" data-sort="num" title="DART 공시 호재/악재 점수">DART</th>
+    <th class="num" data-sort="num">순매수</th>
+    <th class="num" data-sort="num">등락률실값</th>
+    <th>시장</th><th>주문</th>
+  </tr></thead>
+  <tbody>''' + ai_html + '''</tbody>
+</table>
+</div>''') if mode == 'ai' else ''}
+
+<div class="layout-header" {'style="display:none"' if mode == 'ai' else ''}>
   <div class="layout-left" data-section="overview">
     <h2>오늘 시장 수급 (연기금)</h2>
     <div class="summary">
@@ -1250,6 +1359,16 @@ document.querySelectorAll('.layer-toggles input').forEach(checkbox => {{
 }});
 
 applySectionState();
+
+// AI 모드일 때 다른 섹션 숨김 (URL이 ai.html이면)
+if (window.location.pathname.endsWith('ai.html')) {{
+  document.querySelectorAll('.grid2, .layer-toggles').forEach(el => {{
+    el.style.display = 'none';
+  }});
+  // layout-header도 숨김
+  const lh = document.querySelector('.layout-header');
+  if (lh) lh.style.display = 'none';
+}}
 
 // 정렬 가능한 표
 document.querySelectorAll('table.sortable th[data-sort]').forEach(th => {{
@@ -1686,6 +1805,10 @@ def main():
         for fname in ("realtime.html", "index.html"):
             (OUTPUT_DIR / fname).write_text(realtime_html, encoding="utf-8")
             log.info("HTML written: %s", OUTPUT_DIR / fname)
+        # ai.html — realtime payload 그대로 사용해서 ai 모드로 렌더
+        ai_html_out = render_html(payload, mode="ai")
+        (OUTPUT_DIR / "ai.html").write_text(ai_html_out, encoding="utf-8")
+        log.info("HTML written (ai): %s", OUTPUT_DIR / "ai.html")
         # closing.html — 별도 fetch (trading-trend 머지 X) 로 직전 영업일 마감 데이터
         log.info("closing 데이터 별도 fetch (trading-trend 제외)...")
         payload_closing = collect_one_day(trade_date, markets=markets, use_auto=use_auto, mode="closing")

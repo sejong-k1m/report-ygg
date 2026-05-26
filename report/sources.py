@@ -59,11 +59,13 @@ def fetch_todayygg_summary() -> Optional[dict]:
 
 
 def fetch_todayygg_csv() -> Optional[str]:
-    """todayygg.com 의 analysis_latest.csv 다운로드 (텍스트 반환)."""
+    """todayygg.com 의 analysis_latest.csv 다운로드 (텍스트 반환). UTF-8 강제."""
     try:
         r = requests.get(TODAYYGG_CSV_URL, headers=_HEADERS, timeout=30)
         r.raise_for_status()
-        return r.text
+        # Content-Type charset 자동 추측이 ISO-8859-1로 떨어지면 한글 깨짐.
+        # UTF-8로 강제 decode.
+        return r.content.decode("utf-8", errors="replace")
     except Exception as e:
         log.warning("todayygg CSV fetch 실패: %s", e)
         return None
