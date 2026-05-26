@@ -512,10 +512,16 @@ def fetch_auto(merge_judal: bool = True, merge_toss_prices: bool = True,
             sources_used.append("toss-prices")
 
     # 1.5) Toss trading-trend 머지 — 오늘 장중 실시간 매매 데이터로 덮어씀
+    # Top 50 종목만 (전 종목 호출 시 빌드 시간 큼)
     intraday_updated_at = ""
     intraday_base_date = ""
     if merge_toss_trend:
-        codes = [r["stock_code"] for r in rows if r.get("stock_code")]
+        top_for_trend = sorted(
+            [r for r in rows if r.get("stock_code")],
+            key=lambda r: abs(r.get("net_amount", 0) or 0),
+            reverse=True
+        )[:50]
+        codes = [r["stock_code"] for r in top_for_trend]
         trend_map = fetch_toss_trading_trend(codes)
         today_merged = 0
         for r in rows:
@@ -545,11 +551,17 @@ def fetch_auto(merge_judal: bool = True, merge_toss_prices: bool = True,
         if today_merged > 0:
             sources_used.append("toss-realtime")
 
-    # 1.7) DART 공시 머지 (호재/악재 키워드 점수)
+    # 1.7) DART 공시 머지 (호재/악재 키워드 점수) — Top |net| 30 종목만 (비용 절약)
     if merge_dart:
         try:
             from report import dart
-            codes = [r["stock_code"] for r in rows if r.get("stock_code")]
+            # 순매수 절대값 큰 종목 30개만 DART 호출 (빌드 시간 절약)
+            top_for_dart = sorted(
+                [r for r in rows if r.get("stock_code")],
+                key=lambda r: abs(r.get("net_amount", 0) or 0),
+                reverse=True
+            )[:30]
+            codes = [r["stock_code"] for r in top_for_dart]
             dart_map = dart.fetch_dart_scores(codes, days_back=7)
             dart_merged = 0
             for r in rows:
