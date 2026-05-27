@@ -45,7 +45,7 @@ GitHub Actions schedule */5 (5분마다 자체)
   ↓
 .github/workflows/build.yml
   ↓ todayygg + toss(trend+prices) + judal + DART fetch
-  ↓ realtime.html + index.html + closing.html + ai.html
+  ↓ realtime.html + index.html + closing.html + ai.html + bulk.html + themes.html
   ↓ docs/ 푸시
 GitHub Pages 자동 배포
   ↓
@@ -55,6 +55,10 @@ https://sejong-k1m.github.io/report-ygg/
 - **로컬 Windows 스케줄러는 삭제됨** (충돌 방지). GitHub Actions만 source of truth.
 - 회사 PC 꺼져도 24/7 자동.
 - 빌드 타임아웃: 20분.
+- **영업시간 외 빌드 SKIP** (평일 18시 ~ 익일 09시 / 주말 / 한국 공휴일):
+  - `generate.py` 의 `_should_skip_build()` 가 시작 즉시 체크 → 빠른 return
+  - 공휴일은 `holidays` 패키지로 동적 판단 (한국 공휴일 자동 갱신)
+  - 강제 빌드: workflow_dispatch 의 `force_build=true` 옵션 (UI), 또는 환경변수 `FORCE_BUILD=1`
 
 ---
 
@@ -82,7 +86,7 @@ https://sejong-k1m.github.io/report-ygg/
 
 ## 페이지 구성
 
-**5개 모드**: realtime / closing / ai / bulk / themes
+**6개 모드**: realtime / closing / ai / bulk / themes / continuity
 
 ### 실시간 (index.html / realtime.html)
 - 5분마다 자동 갱신 (HTML auto-refresh meta)
@@ -130,6 +134,7 @@ https://sejong-k1m.github.io/report-ygg/
 ### 공통 기능 (모든 모드)
 - 🔍 **종목 검색 바**: 종목명 또는 코드 부분일치 → 모든 표/카드 즉시 필터
 - ⭐ **즐겨찾기**: 별 클릭 → localStorage `report-ygg-favs-v1` 에 저장. "즐겨찾기만" 체크 → 별표 종목만 표시
+  - 첫 방문 시 사용자 보유 종목 자동 등록: 제주반도체(080220), TIGER 일본반도체FACTSET(469160), KoAct 미국나스닥성장기업액티브(0015B0), 대한전선(001440). `report-ygg-default-favs-v1` 키로 한 번만 적용.
 
 ---
 
@@ -179,7 +184,7 @@ RSI 14일은 DB `pension_daily_report.close_price` 시계열로 계산. 첫 14�
 
 ## 미해결 이슈
 
-1. **judal 머지 0/60** — HTML 파싱 실패 (BS가 데이터 셀을 헤더로 잘못 인식). 종목명+코드 추출 가능하지만 파서 다시 짜야 함.
+1. ~~**judal 머지 0/60**~~ — 2026-05-27 수정: judal HTML 구조 (`<th scope="row">` 종목명 + `<td>` 데이터) 에 맞춰 파서 다시 작성. 코드+종목명+시장 정규식 추출. PER/PBR/52주변동률/기대수익률/관련테마 추가 머지.
 2. **미국 주식 데이터 없음** — 13F는 분기별이라 일간 데이터 불가. KRX는 미국 데이터 없음.
 3. **Phase 2 미완**: 네이버 뉴스 sentiment (작업 안 함)
 4. **삼성전자우 같은 우선주** — DART corp_code 매핑 안 될 수 있음 (본주와 공유 여부 미확인)
@@ -230,6 +235,14 @@ build_report.bat
 - [x] 종목 즐겨찾기 (별표 + localStorage) — 2026-05-27 완료
 - [x] 📦 대량매매 탭 (bulk.html) — 10만주↑ + DART 5%룰 — 2026-05-27 완료
 - [x] 🏷 테마/업종 탭 (themes.html) — sector 별 수급 차트+표+클릭 종목 — 2026-05-27 완료
+- [x] ⏰ 영업시간 외/주말/한국공휴일 빌드 SKIP (`_should_skip_build`) — 2026-05-27 완료
+- [x] 🔥 **연속 누적 페이지** (`continuity.html`) — 2026-05-27 완료
+  - 가로 막대 차트 Top 20 (Chart.js indexAxis='y')
+  - 아이콘: 🔥 불타기 / 💧 물타기 / ━ 보합 / ❓ 판단불가 (`_classify_burning()`)
+  - 호버 툴팁: 구간 누적 순매수, 연속 일수, 오늘/구간 평단
+  - 표: 종목코드 / 종목명 / 연속(거래일) / 구간 / 불타기·물타기·누적평단 / 오늘평단 / 구간 누적 순매수
+  - 데이터: todayygg row 의 `cumulative_net_amount`, `period_*_date`, `today_buy_avg`, `period_buy_avg`
+  - 필터: 구간 ≥10일 + 오늘 순매수>0 + 누적>0
 - [ ] 📊 **국민연금 포트폴리오 탭** — 데이터 소스 미확정 (whale-insight 스크래핑 / NPS 분기공시 / DART 합성 중 결정 대기)
 - [ ] **AI 점수 객관화 (큰 작업, 단계별)** — 사용자 요청 2026-05-27
   - [x] Phase A: RSI 14일 (DB close_price 컬럼 추가 + 시계열 계산) — 2026-05-27 완료

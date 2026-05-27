@@ -212,3 +212,155 @@ def fetch_dart_scores(stock_codes: list, days_back: int = 7) -> dict:
     log.info("DART scores: %d 종목 (점수≠0: %d개)",
              len(result), sum(1 for v in result.values() if v["score"] != 0))
     return result
+
+
+# ==========================================================================
+# 대량보유상황보고서 (5% 룰) — /api/majorstock.json
+# ==========================================================================
+NPS_REPORTERS = ("국민연금공단", "국민연금기금", "국민연금")
+
+
+def _to_int_safe(v) -> int:
+    if v is None:
+        return 0
+    try:
+        return int(str(v).replace(",", "").replace(" ", "") or 0)
+    except (ValueError, TypeError):
+        return 0
+
+
+def _to_float_safe(v) -> float:
+    if v is None:
+        return 0.0
+    try:
+        return float(str(v).replace(",", "").replace(" ", "") or 0)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def fetch_major_holdings(stock_code: str) -> list:
+    """종목의 대량보유상황보고서 (5%룰) 전체 이력."""
+    key = get_api_key()
+    if not key:
+        return []
+    corp_map = load_corp_code_map()
+    corp_code = corp_map.get(stock_code)
+    if not corp_code:
+        return []
+    try:
+        r = requests.get(
+            f"{DART_BASE}/majorstock.json",
+            params={"crtfc_key": key, "corp_code": corp_code},
+            timeout=15,
+        )
+        r.raise_for_status()
+        payload = r.json()
+    except Exception as e:
+        log.warning("DART majorstock %s fetch 실패: %s", stock_code, e)
+        return []
+    if payload.get("status") not in ("000", "013"):
+        log.warning("DART majorstock %s status=%s", stock_code, payload.get("status"))
+        return []
+    raw = payload.get("list") or []
+    result = []
+    for d in raw:
+        result.append({
+            "stock_code": stock_code,
+            "corp_code": corp_code,
+            "rcept_no": d.get("rcept_no", ""),
+            "rcept_dt": d.get("rcept_dt", ""),
+            "corp_name": d.get("corp_name", ""),
+            "report_tp": d.get("report_tp", ""),
+            "repror": (d.get("repror") or "").strip(),
+            "stkqy": _to_int_safe(d.get("stkqy")),
+            "stkqy_irds": _to_int_safe(d.get("stkqy_irds")),
+            "stkrt": _to_float_safe(d.get("stkrt")),
+            "stkrt_irds": _to_float_safe(d.get("stkrt_irds")),
+            "report_resn": d.get("report_resn", ""),
+        })
+    return result
+
+
+def fetch_major_holdings_bulk(
+    stock_codes: list,
+    cache_path: Optional[str] = None,
+    cache_ttl_hours: int = 12,
+) -> dict:
+    """여러 종목 대량보유공시 일괄 fetch + 디스크 캐시."""
+    if not get_api_key():
+        return {}
+    cache_data: dict = {"fetched_at": "", "data": {}}
+    if cache_path and os.path.exists(cache_path):
+        try:
+            import json as _json
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cache_data = _json.load(f)
+        except Exception:
+            cache_data = {"fetched_at": "", "data": {}}
+    fresh = False
+    if cache_data.get("fetched_at"):
+        try:
+            fetched = dt.datetime.fromisoformat(cache_data["fetched_at"])
+            if (dt.datetime.now() - fetched).total_seconds() < cache_ttl_hours * 3600:
+                fresh = True
+        except Exception:
+            pass
+    if fresh and cache_data.get("data"):
+        log.info("DART majorstock 캐시 사용 (TTL %dh 이내, %d 종목)",
+                 cache_ttl_hours, len(cache_data["data"]))
+        return cache_data["data"]
+    load_corp_code_map()
+    result: dict = {}
+    hit = 0
+    for code in stock_codes:
+        if not code:
+            continue
+        items = fetch_major_holdings(code)
+        if items:
+            result[code] = items
+            hit += 1
+    log.info("DART majorstock fetch 완료: %d/%d 종목 hit", hit, len(stock_codes))
+    if cache_path:
+        try:
+            import json as _json
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                _json.dump(
+                    {"fetched_at": dt.datetime.now().isoformat(), "data": result},
+                    f, ensure_ascii=False, indent=2,
+                )
+        except Exception as e:
+            log.warning("DART majorstock 캐시 저장 실패: %s", e)
+    return result
+
+
+def filter_nps_holdings(majorstock_data: dict) -> dict:
+    """fetch_major_holdings_bulk 결과 → 보고자=국민연금공단 인 공시만."""
+    nps = {}
+    for code, items in majorstock_data.items():
+        nps_items = [
+            d for d in items
+            if any(r in (d.get("repror") or "") for r in NPS_REPORTERS)
+        ]
+        if nps_items:
+            nps_items.sort(key=lambda x: x.get("rcept_dt", ""), reverse=True)
+            nps[code] = nps_items
+    return nps
+
+
+def latest_nps_holding(nps_data: dict) -> dict:
+    """각 종목별 국민연금 최신 보유 1건 추출."""
+    out = {}
+    for code, items in nps_data.items():
+        if not items:
+            continue
+        latest = items[0]
+        out[code] = {
+            "qty": latest["stkqy"],
+            "rate_pct": latest["stkrt"],
+            "rcept_dt": latest["rcept_dt"],
+            "report_tp": latest["report_tp"],
+            "qty_irds": latest["stkqy_irds"],
+            "rate_irds": latest["stkrt_irds"],
+        }
+    return out

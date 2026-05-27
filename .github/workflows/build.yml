@@ -4,9 +4,14 @@ on:
   schedule:
     # GitHub Actions schedule cron은 자주 skip됨 (peak 시간대 1시간+ 멈춤 흔함).
     # 5분 주기 + 외부 ping 서비스(cron-job.org)로 안정성 확보.
-    # 변경 없으면 commit/push skip → docs 부담 없음.
+    # 영업시간 외 (평일 18시~익일 09시 / 주말 / 한국 공휴일) 는 Python 단에서 빠른 SKIP.
     - cron: '*/5 * * * *'    # every 5 minutes
   workflow_dispatch:   # 수동 실행 버튼
+    inputs:
+      force_build:
+        description: '시간 체크 우회 (강제 빌드 — 영업시간 외에도 빌드)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write      # 빌드 결과 push 권한
@@ -39,6 +44,8 @@ jobs:
         env:
           TZ: Asia/Seoul
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          # workflow_dispatch 수동 trigger 시 force_build=true 면 영업시간 체크 우회
+          FORCE_BUILD: ${{ github.event.inputs.force_build == 'true' && '1' || '0' }}
 
       - name: Build closing mode (after 16 KST)
         run: |
@@ -52,6 +59,7 @@ jobs:
         env:
           TZ: Asia/Seoul
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          FORCE_BUILD: ${{ github.event.inputs.force_build == 'true' && '1' || '0' }}
 
       - name: Copy output to docs
         run: |

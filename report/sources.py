@@ -366,6 +366,8 @@ def fetch_judal(direction: str = "buy") -> list:
         log.warning("judal %s fetch 실패: %s", direction, e)
         return []
 
+    import re
+
     soup = BeautifulSoup(r.text, "html.parser")
     # 데이터 테이블 찾기 (페이지에 여러 표가 있을 수 있으니 가장 큰 표를 우선)
     candidates = soup.find_all("table")
@@ -380,14 +382,35 @@ def fetch_judal(direction: str = "buy") -> list:
         log.warning("judal %s: table not found", direction)
         return []
 
-    # 헤더 파싱
-    header_cells = [c.get_text(strip=True) for c in target.find_all("th")]
-    log.info("judal %s headers: %s", direction, header_cells)
+    # judal HTML 구조 특성:
+    #   - 헤더 행: 모든 셀이 <th>
+    #   - 데이터 행: 첫 셀(종목명) = <th scope="row">, 나머지 = <td>
+    # 따라서 모든 <th> 를 헤더로 보면 종목명 셀들이 섞여 진짜 헤더 + 종목명들이 함께 나옴.
+    # → 행 단위로 처리하면서 "모두 th 인 행"만 헤더로 인식.
+    header_cells_text = []
+    data_rows = []
+    for tr in target.find_all("tr"):
+        cells = tr.find_all(["th", "td"])
+        if not cells or len(cells) < 3:
+            continue
+        if all(c.name == "th" for c in cells):
+            # 진짜 헤더 행 (첫 한 번만 채택)
+            if not header_cells_text:
+                header_cells_text = [c.get_text(strip=True) for c in cells]
+        else:
+            data_rows.append(cells)
+
+    log.info("judal %s headers: %s", direction, header_cells_text[:25])
+    log.info("judal %s data rows: %d", direction, len(data_rows))
+
+    if not header_cells_text or not data_rows:
+        log.warning("judal %s: header or data rows missing", direction)
+        return []
 
     # 컬럼 인덱스 매핑 (퍼지)
     def _find_col(*candidates):
         for cand in candidates:
-            for i, h in enumerate(header_cells):
+            for i, h in enumerate(header_cells_text):
                 if cand in h:
                     return i
         return -1
@@ -403,26 +426,39 @@ def fetch_judal(direction: str = "buy") -> list:
     idx_mcap   = _find_col("시가총액", "시총")
     idx_expected = _find_col("기대 수익률", "기대수익률")
     idx_3d_sum   = _find_col("3일합산", "3일 합산")
+    idx_theme    = _find_col("관련테마", "테마")
+
+    # 종목명 셀 텍스트에서 "삼성전자KOSPI 005930Information" → name/market/code 추출
+    name_re = re.compile(r'^(.+?)(KOSPI|KOSDAQ|KONEX)\s*([0-9A-Z]{6,7})')
 
     rows = []
-    for tr in target.find_all("tr"):
-        cells = tr.find_all(["td"])
-        if not cells or len(cells) < 5:
-            continue
+    for cells in data_rows:
         def _cell(i):
             if i < 0 or i >= len(cells):
                 return ""
             return cells[i].get_text(strip=True)
 
-        name = _cell(idx_name)
-        if not name:
+        raw_name = _cell(idx_name)
+        if not raw_name:
             continue
-        # 종목코드: judal 페이지엔 코드가 명시 안 될 수 있음 → 이후 종목명 매칭으로 보강
+        # 종목명 / 시장 / 코드 분리
+        m = name_re.match(raw_name)
+        if m:
+            name, market, code = m.group(1).strip(), m.group(2), m.group(3)
+        else:
+            # 정규식 매칭 실패 → 텍스트 그대로 종목명, 시장·코드 빈 값
+            name, market, code = raw_name, "", ""
+            # "Information" suffix 제거
+            if name.endswith("Information"):
+                name = name[:-len("Information")].strip()
+
         rows.append({
+            "stock_code": code,
             "stock_name": name,
+            "market": market,
             "amount": _parse_amount_eok(_cell(idx_amount)),
             "current_price": _to_int(_cell(idx_price)),
-            "change_pct_52w": _cell(idx_52w_var),     # 원본 텍스트 ("−13%/244%" 형태)
+            "change_pct_52w": _cell(idx_52w_var),
             "change_pct_3y":  _cell(idx_3y_var),
             "pbr": _to_float(_cell(idx_pbr)),
             "per": _to_float(_cell(idx_per)),
@@ -430,19 +466,26 @@ def fetch_judal(direction: str = "buy") -> list:
             "market_cap": _parse_amount_eok(_cell(idx_mcap)),
             "expected_return": _cell(idx_expected),
             "three_day_sum": _parse_amount_eok(_cell(idx_3d_sum)),
+            "theme": _cell(idx_theme),
             "source": "judal",
             "direction": direction,
         })
-    log.info("judal %s → %d 종목", direction, len(rows))
+    log.info("judal %s → %d 종목 (코드 추출: %d)",
+             direction, len(rows), sum(1 for r in rows if r.get("stock_code")))
     return rows
 
 
 def fetch_judal_both() -> dict:
-    """매수 + 매도 한 번에. return: {stock_name: judal_row}"""
+    """
+    매수 + 매도 한 번에.
+    return: {key: judal_row} — key 는 stock_code (있으면) 또는 stock_name (없으면).
+    """
     out = {}
     for d in ("buy", "sell"):
         for r in fetch_judal(d):
-            out[r["stock_name"]] = r
+            key = r.get("stock_code") or r.get("stock_name")
+            if key:
+                out[key] = r
     return out
 
 
@@ -579,12 +622,18 @@ def fetch_auto(merge_judal: bool = True, merge_toss_prices: bool = True,
         except Exception:
             log.exception("dart merge failed (계속 진행)")
 
-    # 2) judal 가치지표 머지 (종목명 기준)
+    # 2) judal 가치지표 머지 (코드 우선, 종목명 fallback)
     if merge_judal:
         judal_map = fetch_judal_both()
+        # 종목명 → judal_row 부수 인덱스 (코드로 못 찾을 때 fallback)
+        judal_by_name = {}
+        for jr in judal_map.values():
+            n = jr.get("stock_name")
+            if n:
+                judal_by_name[n] = jr
         merged = 0
         for r in rows:
-            jr = judal_map.get(r["stock_name"])
+            jr = judal_map.get(r.get("stock_code")) or judal_by_name.get(r.get("stock_name"))
             if jr:
                 r["pbr"] = jr.get("pbr")
                 r["per"] = jr.get("per")
@@ -592,8 +641,12 @@ def fetch_auto(merge_judal: bool = True, merge_toss_prices: bool = True,
                 r["change_pct_52w"] = jr.get("change_pct_52w")
                 r["change_pct_3y"] = jr.get("change_pct_3y")
                 r["expected_return"] = jr.get("expected_return")
+                r["theme"] = jr.get("theme") or r.get("theme", "")
                 merged += 1
-        log.info("judal merged: %d/%d", merged, len(rows))
+        log.info("judal merged: %d/%d (judal codes=%d, names=%d)",
+                 merged, len(rows),
+                 sum(1 for k in judal_map if k and not k[0].isdigit() == False),
+                 len(judal_by_name))
         if merged > 0:
             sources_used.append("judal")
 

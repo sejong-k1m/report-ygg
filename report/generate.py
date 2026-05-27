@@ -464,6 +464,122 @@ def aggregate_by_sector(rows: list, sector_field: str = "sector") -> list:
     return sorted(by_sector.values(), key=lambda x: x["net"], reverse=True)
 
 
+def _classify_burning(today_avg: float, period_avg: float) -> str:
+    """
+    오늘 매수평단 vs 구간 평단 비교:
+    - today > period (+0.5%↑) → "burning" (불타기 🔥) — 오늘 평단이 더 비싸게 사고 있음
+    - today < period (-0.5%↑) → "watering" (물타기 💧) — 오늘 평단이 더 싸게 사고 있음
+    - 그 외 → "neutral" (보합 ━)
+    - 데이터 없음 → "unknown" (❓)
+    """
+    if today_avg <= 0 or period_avg <= 0:
+        return "unknown"
+    diff_pct = abs(today_avg - period_avg) / period_avg * 100
+    if diff_pct < 0.5:
+        return "neutral"
+    return "burning" if today_avg > period_avg else "watering"
+
+
+def build_continuity_data(rows: list = None, min_days: int = 2,
+                          min_cumul: int = 0) -> list:
+    """
+    우리 DB (pension_daily_report) 시계열 기반 연속 매수 종목 계산.
+    각 종목별로 가장 최근 trade_date 부터 거꾸로 가며 net_amount > 0 인 연속 일수 카운트.
+    그 구간의 sum(net), sum(buy_amount), sum(buy_qty) 로 누적/평단 계산.
+
+    조건: 연속 일수 >= min_days
+    정렬: 구간 누적 순매수 desc
+    return: list of dict
+    """
+    conn = _db_conn()
+    db_rows = conn.execute("""
+        SELECT stock_code, trade_date, stock_name, market,
+               net_amount, buy_amount, sell_amount,
+               buy_qty, sell_qty, close_price, market_cap
+        FROM pension_daily_report
+        WHERE trade_date >= ?
+        ORDER BY stock_code, trade_date DESC
+    """, ((dt.date.today() - dt.timedelta(days=180)).strftime("%Y%m%d"),)).fetchall()
+    conn.close()
+
+    # 종목별 그룹화 (이미 trade_date DESC 정렬)
+    by_code = {}
+    for r in db_rows:
+        by_code.setdefault(r["stock_code"], []).append(dict(r))
+
+    items = []
+    pos_today_count = 0
+    consec_2_count = 0
+    for code, series in by_code.items():
+        if not series:
+            continue
+        # 가장 최근부터 net > 0 연속 카운트
+        consec = 0
+        consec_buy_amount = 0
+        consec_buy_qty = 0
+        consec_net_amount = 0
+        latest_date = series[0]["trade_date"]
+        oldest_consec_date = latest_date
+        today = series[0]
+        if (today["net_amount"] or 0) > 0:
+            pos_today_count += 1
+        for s in series:
+            if (s["net_amount"] or 0) > 0:
+                consec += 1
+                consec_buy_amount += s["buy_amount"] or 0
+                consec_buy_qty += s["buy_qty"] or 0
+                consec_net_amount += s["net_amount"] or 0
+                oldest_consec_date = s["trade_date"]
+            else:
+                break   # 연속 끊김
+        if consec >= 2:
+            consec_2_count += 1
+
+        # 필터: 연속 일수 + 누적
+        if consec < min_days:
+            continue
+        if consec_net_amount < min_cumul:
+            continue
+
+        # 오늘 (최신) 평단
+        today_buy_amt = today["buy_amount"] or 0
+        today_buy_q = today["buy_qty"] or 0
+        today_avg = (today_buy_amt / today_buy_q) if today_buy_q > 0 else 0
+        # 구간 평단 (오늘 포함 전체 가중 평균)
+        period_avg = (consec_buy_amount / consec_buy_qty) if consec_buy_qty > 0 else 0
+        # 오늘 평단 vs 이전 (구간 안 오늘 제외) 평단
+        prev_buy_amt = consec_buy_amount - today_buy_amt
+        prev_buy_q = consec_buy_qty - today_buy_q
+        prev_avg = (prev_buy_amt / prev_buy_q) if prev_buy_q > 0 else 0
+        burn = _classify_burning(today_avg, prev_avg) if prev_avg > 0 else "unknown"
+
+        def _fmt_d(d):
+            return f"{d[:4]}-{d[4:6]}-{d[6:8]}" if d and len(d) == 8 else (d or "")
+
+        items.append({
+            "code": code,
+            "name": today["stock_name"],
+            "market": today["market"],
+            "days": consec,
+            "period_start": _fmt_d(oldest_consec_date),
+            "period_end": _fmt_d(latest_date),
+            "today_avg": int(today_avg),
+            "period_avg": int(period_avg),
+            "prev_avg": int(prev_avg),
+            "burn": burn,
+            "cumul": int(consec_net_amount),
+            "net_amount": today["net_amount"] or 0,
+            "close_price": today["close_price"] or 0,
+        })
+
+    items.sort(key=lambda x: x["cumul"], reverse=True)
+    log.info(
+        "continuity (DB 시계열): 종목 %d개 중 오늘 매수 %d개, 연속2일↑ %d개, %s일↑ 조건 통과 %d개",
+        len(by_code), pos_today_count, consec_2_count, min_days, len(items),
+    )
+    return items[:200]
+
+
 def build_theme_data(rows: list) -> dict:
     """
     테마 페이지용 JSON 페이로드.
@@ -1235,10 +1351,14 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
     mode_active_ai = "active" if mode == "ai" else ""
     mode_active_bulk = "active" if mode == "bulk" else ""
     mode_active_themes = "active" if mode == "themes" else ""
+    mode_active_cont = "active" if mode == "continuity" else ""
     auto_refresh_meta = '<meta http-equiv="refresh" content="3600">' if mode == "realtime" else ''
 
     # 테마 페이지 데이터 (mode=='themes' 일 때만 큰 페이로드 생성)
     theme_data_json = json.dumps(build_theme_data(rows), ensure_ascii=False) if mode == "themes" else "{}"
+    # 연속 누적 페이지 데이터 (mode=='continuity' 일 때만, DB 시계열 기반)
+    continuity_items = build_continuity_data(min_days=2) if mode == "continuity" else []
+    continuity_data_json = json.dumps(continuity_items, ensure_ascii=False)
 
     # 마지막 업데이트 + 다음 예정 시각 (실시간 모드)
     next_update_at = (now.replace(minute=0, second=0, microsecond=0) + dt.timedelta(hours=1)).strftime("%H:%M")
@@ -1309,6 +1429,19 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
             '<div class="freshness-note">'
             '📊 sector 분류는 todayygg 응답의 업종 분류 기반. 차트의 막대를 클릭하거나 '
             '우측 표의 행을 클릭하면 하단에 해당 테마 구성 종목이 나타납니다.'
+            '</div>'
+        )
+    elif mode == "continuity":
+        mode_subtitle = (
+            f"🔥 연속 매수 종목 — 우리 DB 시계열에서 net_amount&gt;0 인 연속 거래일 ≥2일 "
+            f"· 마지막 빌드: <b>{last_update_hhmm}</b>"
+        )
+        data_freshness_note = (
+            '<div class="freshness-note">'
+            '📌 <b>🔥 불타기</b> = 오늘 매수평단이 어제까지 평균보다 비쌈 (단가↑ 추격 매수) · '
+            '<b>💧 물타기</b> = 오늘 매수평단이 더 쌈 (단가↓ 추가 매수) · '
+            '<b>━ 보합</b> · <b>❓ 첫날 (이전 데이터 없음)</b>. '
+            '연속 일수 = 우리 DB의 영업일 카운트. 빌드 누적 며칠 이내엔 표시 종목 적음 (정상).'
             '</div>'
         )
     else:  # closing
@@ -1695,6 +1828,26 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   .chart-wrap {{ position: relative; height: 280px; }}
   @media (max-width: 700px) {{ .chart-wrap {{ height: 220px; }} }}
 
+  /* 연속 누적 매수 페이지 */
+  .continuity-page {{ margin-top: 8px; }}
+  .continuity-chart-section, .continuity-table-section {{
+    background: white; border-radius: 8px; padding: 12px 16px;
+    margin-bottom: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }}
+  .continuity-chart-section h2, .continuity-table-section h2 {{ margin-top: 0; font-size: 15px; }}
+  .continuity-chart-wrap {{ position: relative; min-height: 560px; }}
+  .burn-icon {{ display: inline-block; margin-right: 4px; font-size: 13px; }}
+  .burn-burning {{ color: #e74c3c; }}
+  .burn-watering {{ color: #3498db; }}
+  .burn-neutral  {{ color: #7f8c8d; }}
+  .burn-unknown  {{ color: #bdc3c7; }}
+  .continuity-table td.burn-cell {{
+    font-size: 11px; line-height: 1.3;
+  }}
+  .continuity-table td.burn-cell .avg-info {{
+    color: #7f8c8d; margin-left: 4px;
+  }}
+
   /* AI 페이지 좌우 분할 */
   .ai-page-split {{
     display: grid;
@@ -1838,6 +1991,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   <a href="ai.html" class="{mode_active_ai}">🤖 AI 점수</a>
   <a href="bulk.html" class="{mode_active_bulk}">📦 대량매매</a>
   <a href="themes.html" class="{mode_active_themes}">🏷 테마</a>
+  <a href="continuity.html" class="{mode_active_cont}">🔥 연속매수</a>
   <button class="pdf-btn" onclick="window.print()">📥 PDF 저장</button>
 </div>
 
@@ -2044,6 +2198,37 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
 </section>
 
 </div>''') if mode == 'themes' else ''}
+
+{('''<div class="continuity-page">
+
+<section class="continuity-chart-section">
+  <h2>🔥 구간 누적 순매수 — Top 20 (가로 막대)</h2>
+  <div class="filter-hint">색 = 🔥 불타기 (오늘 평단↑) / 💧 물타기 (오늘 평단↓) / ━ 보합 / ❓ 데이터 부족. 호버 시 상세 정보</div>
+  <div class="continuity-chart-wrap"><canvas id="continuity-chart"></canvas></div>
+</section>
+
+<section class="continuity-table-section">
+  <h2>전체 연속 매수 종목 (구간 10일↑)</h2>
+  <div class="filter-hint">컬럼 헤더 클릭 → 정렬</div>
+  <table class="sortable continuity-table">
+    <thead><tr>
+      <th>#</th>
+      <th>코드</th>
+      <th>종목명</th>
+      <th class="num" data-sort="num">연속(거래일)</th>
+      <th>연속 구간</th>
+      <th>불타기·물타기 / 누적평단</th>
+      <th class="num" data-sort="num">오늘 평단</th>
+      <th class="num" data-sort="num">구간 누적 순매수</th>
+      <th>주문</th>
+    </tr></thead>
+    <tbody id="continuity-table-body">
+      <tr><td colspan="9" class="empty">연속 매수 종목 데이터 로딩 중...</td></tr>
+    </tbody>
+  </table>
+</section>
+
+</div>''') if mode == 'continuity' else ''}
 
 <div class="layout-header" {'style="display:none"' if mode in ('ai', 'bulk') else ''}>
   <div class="layout-left" data-section="overview">
@@ -2309,8 +2494,8 @@ document.querySelectorAll('.layer-toggles input').forEach(checkbox => {{
 
 applySectionState();
 
-// AI / bulk / themes 모드일 때 다른 섹션 숨김 (URL 기반)
-const _isSpecialPage = ['ai.html', 'bulk.html', 'themes.html'].some(
+// AI / bulk / themes / continuity 모드일 때 다른 섹션 숨김 (URL 기반)
+const _isSpecialPage = ['ai.html', 'bulk.html', 'themes.html', 'continuity.html'].some(
   p => window.location.pathname.endsWith(p)
 );
 if (_isSpecialPage) {{
@@ -2320,9 +2505,9 @@ if (_isSpecialPage) {{
   // layout-header 숨김
   const lh = document.querySelector('.layout-header');
   if (lh) lh.style.display = 'none';
-  // bulk/themes 에서는 커뮤니티 사이드바도 숨김
+  // bulk/themes/continuity 에서는 커뮤니티 사이드바도 숨김
   const cp = document.querySelector('.community-panel');
-  if (cp && (window.location.pathname.endsWith('bulk.html') || window.location.pathname.endsWith('themes.html'))) {{
+  if (cp && ['bulk.html', 'themes.html', 'continuity.html'].some(p => window.location.pathname.endsWith(p))) {{
     cp.style.display = 'none';
   }}
 }}
@@ -2379,6 +2564,21 @@ document.querySelectorAll('table.sortable th[data-sort]').forEach(th => {{
 // ============================================================
 const FAV_KEY = 'report-ygg-favs-v1';
 let favSet = new Set(JSON.parse(localStorage.getItem(FAV_KEY) || '[]'));
+
+// 첫 방문 시 보유 종목 자동 즐겨찾기 (사용자 알림용; 토글로 해제 가능)
+const DEFAULT_FAVS = [
+  '080220',  // 제주반도체 (KOSDAQ)
+  '469160',  // TIGER 일본반도체 FACTSET (KOSPI)
+  '0015B0',  // KoAct 미국나스닥성장기업 액티브 (KOSPI)
+  '001440',  // 대한전선 (KOSPI)
+];
+const DEFAULT_FAVS_KEY = 'report-ygg-default-favs-v1';
+if (!localStorage.getItem(DEFAULT_FAVS_KEY)) {{
+  DEFAULT_FAVS.forEach(c => favSet.add(c));
+  localStorage.setItem(FAV_KEY, JSON.stringify([...favSet]));
+  localStorage.setItem(DEFAULT_FAVS_KEY, '1');
+  console.log('보유 종목 4개 자동 즐겨찾기 등록:', DEFAULT_FAVS);
+}}
 
 function saveFavs() {{
   localStorage.setItem(FAV_KEY, JSON.stringify([...favSet]));
@@ -2770,6 +2970,137 @@ searchClear.addEventListener('click', () => {{
     renderCard(firstRow.dataset.stockCode);
   }}
 }})();
+
+// ============================================================
+// 연속 누적 매수 페이지 (continuity.html)
+// ============================================================
+(function() {{
+  if (!window.location.pathname.endsWith('continuity.html')) return;
+  const items = {continuity_data_json};
+  if (!items || items.length === 0) {{
+    const tbody = document.getElementById('continuity-table-body');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="9" class="empty">연속 매수 종목 없음 (구간 10일↑ 종목 없음)</td></tr>';
+    return;
+  }}
+
+  const BURN_INFO = {{
+    burning:  {{ icon: '🔥', label: '불타기', color: 'rgba(231, 76, 60, 0.8)',  border: '#c0392b' }},
+    watering: {{ icon: '💧', label: '물타기', color: 'rgba(52, 152, 219, 0.8)', border: '#2980b9' }},
+    neutral:  {{ icon: '━',  label: '보합',   color: 'rgba(149, 165, 166, 0.8)', border: '#7f8c8d' }},
+    unknown:  {{ icon: '❓', label: '판단불가', color: 'rgba(189, 195, 199, 0.8)', border: '#95a5a6' }},
+  }};
+
+  const fmtWon = n => {{
+    const abs = Math.abs(n || 0);
+    if (abs >= 1e8) return (abs/1e8).toFixed(1) + '억';
+    if (abs >= 1e4) return (abs/1e4).toFixed(0) + '만';
+    return abs.toLocaleString() + '원';
+  }};
+  const fmtPeriod = (s, e) => {{
+    if (!s || !e) return '';
+    const f = d => d.length >= 10 ? d.slice(5, 10).replace('-', '.') : d;
+    return `${{f(s)}}~${{f(e)}}`;
+  }};
+
+  // ---- 차트: Top 20 가로 막대 ----
+  const ctx = document.getElementById('continuity-chart');
+  if (ctx && typeof Chart !== 'undefined') {{
+    const top = items.slice(0, 20);
+    const labels = top.map(d => `${{BURN_INFO[d.burn].icon}} ${{d.name}}`);
+    const bgColors = top.map(d => BURN_INFO[d.burn].color);
+    const borderColors = top.map(d => BURN_INFO[d.burn].border);
+    new Chart(ctx, {{
+      type: 'bar',
+      data: {{
+        labels: labels,
+        datasets: [{{
+          label: '구간 누적 순매수 (원)',
+          data: top.map(d => d.cumul),
+          backgroundColor: bgColors,
+          borderColor: borderColors,
+          borderWidth: 1,
+          borderRadius: 4,
+        }}],
+      }},
+      options: {{
+        indexAxis: 'y',
+        responsive: true, maintainAspectRatio: false,
+        plugins: {{
+          legend: {{ display: false }},
+          tooltip: {{
+            callbacks: {{
+              title: items => {{
+                const idx = items[0].dataIndex;
+                const d = top[idx];
+                return `${{BURN_INFO[d.burn].icon}} ${{d.name}} (${{d.code}})`;
+              }},
+              label: c => {{
+                const d = top[c.dataIndex];
+                const avgInfo = (d.today_avg > 0 && d.period_avg > 0)
+                  ? ` · ${{BURN_INFO[d.burn].label}} (오늘 ${{d.today_avg.toLocaleString()}} / 구간 ${{d.period_avg.toLocaleString()}})`
+                  : '';
+                return [
+                  `구간 누적 순매수: ${{c.parsed.x.toLocaleString()}} 원`,
+                  `연속(거래일): ${{d.days}}일`,
+                  avgInfo,
+                ].filter(s => s);
+              }},
+            }},
+          }},
+        }},
+        scales: {{
+          x: {{
+            ticks: {{ callback: v => fmtWon(v), font: {{ size: 10 }} }},
+            grid: {{ color: 'rgba(0,0,0,0.06)' }},
+            beginAtZero: true,
+          }},
+          y: {{
+            ticks: {{ font: {{ size: 11 }} }},
+            grid: {{ display: false }},
+          }},
+        }},
+      }},
+    }});
+  }}
+
+  // ---- 표: 전체 종목 ----
+  const tbody = document.getElementById('continuity-table-body');
+  if (tbody) {{
+    tbody.innerHTML = items.map((d, i) => {{
+      const info = BURN_INFO[d.burn];
+      const code = String(d.code).replace(/[<>"']/g, '');
+      const name = String(d.name).replace(/[<>]/g, '');
+      const avgInfo = (d.period_avg > 0)
+        ? `<span class="avg-info">· 누적평단 ${{d.period_avg.toLocaleString()}}</span>`
+        : '';
+      const todayAvgCell = d.today_avg > 0 ? d.today_avg.toLocaleString() : '-';
+      return `
+        <tr class="stock-row" data-stock-code="${{code}}" data-stock-name="${{name}}">
+          <td>${{i + 1}}</td>
+          <td class="code">
+            <span class="fav-star" data-stock="${{code}}">☆</span>${{code}}
+          </td>
+          <td class="name">${{name}}</td>
+          <td class="num" data-value="${{d.days}}"><b style="color:#c0392b;">${{d.days}}</b></td>
+          <td>${{fmtPeriod(d.period_start, d.period_end)}}</td>
+          <td class="burn-cell">
+            <span class="burn-icon burn-${{d.burn}}">${{info.icon}}</span>
+            <span class="burn-${{d.burn}}"><b>${{info.label}}</b></span>
+            ${{avgInfo}}
+          </td>
+          <td class="num">${{todayAvgCell}}</td>
+          <td class="num pos" data-value="${{d.cumul}}"><b>${{fmtWon(d.cumul)}}</b></td>
+          <td class="actions">
+            <a href="https://tossinvest.com/stocks/A${{code}}/order" target="_blank" class="btn-trade">매매</a>
+          </td>
+        </tr>
+      `;
+    }}).join('');
+    // 즐겨찾기 별 상태 적용
+    if (typeof applyFavStars === 'function') applyFavStars();
+    if (typeof applyStockFilter === 'function') applyStockFilter();
+  }}
+}})();
 </script>
 
 <script type="module">
@@ -3148,8 +3479,44 @@ onSnapshot(tq, snap => {{
 # 엔트리포인트
 # ==========================================================================
 
+def _should_skip_build() -> tuple:
+    """
+    한국 영업시간 (평일 09:00 ~ 17:59 KST) + 공휴일 체크.
+    return: (skip: bool, reason: str)
+    환경변수 FORCE_BUILD=1 이면 항상 False (긴급 빌드용).
+    """
+    if os.environ.get("FORCE_BUILD") == "1":
+        return False, ""
+    now = dt.datetime.now()   # workflow.yml 에서 TZ=Asia/Seoul 설정
+    weekday = now.weekday()   # 0=Mon, 6=Sun
+    hour = now.hour
+    dow_names = ['월', '화', '수', '목', '금', '토', '일']
+    if weekday >= 5:
+        return True, f"주말 ({dow_names[weekday]}요일)"
+    if hour < 9 or hour >= 18:
+        return True, f"영업시간 외 (KST {hour:02d}시 — 09~17시만 빌드)"
+    try:
+        import holidays
+        kr = holidays.KR(years=now.year)
+        if now.date() in kr:
+            holiday_name = kr.get(now.date(), '공휴일')
+            return True, f"한국 공휴일: {holiday_name}"
+    except ImportError:
+        log.warning("holidays 패키지 미설치 → 공휴일 체크 skip")
+    return False, ""
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 영업일/시간 체크: 평일 09 ~ 17 KST + 공휴일 제외. (FORCE_BUILD=1 우회)
+    # ────────────────────────────────────────────────────────────────────────
+    skip, reason = _should_skip_build()
+    if skip:
+        log.info("=== 빌드 SKIP: %s ===", reason)
+        print(f"[SKIP] {reason}")
+        return
 
     parser = argparse.ArgumentParser()
     parser.add_argument("date", nargs="?", help="YYYYMMDD (기본: 직전 영업일 — auto fetch 모드에선 todayygg가 정한 날짜로 덮어씀)")
@@ -3220,6 +3587,11 @@ def main():
         themes_html_out = render_html(payload, mode="themes")
         (OUTPUT_DIR / "themes.html").write_text(themes_html_out, encoding="utf-8")
         log.info("HTML written (themes): %s", OUTPUT_DIR / "themes.html")
+
+        # continuity.html — 연속 누적 매수 (구간 10일↑ 종목, 누적 desc)
+        cont_html_out = render_html(payload, mode="continuity")
+        (OUTPUT_DIR / "continuity.html").write_text(cont_html_out, encoding="utf-8")
+        log.info("HTML written (continuity): %s", OUTPUT_DIR / "continuity.html")
 
         # closing.html — 별도 fetch (trading-trend 머지 X) 로 직전 영업일 마감 데이터
         log.info("closing 데이터 별도 fetch (trading-trend 제외)...")
