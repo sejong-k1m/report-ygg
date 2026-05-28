@@ -45,7 +45,7 @@ jobs:
           TZ: Asia/Seoul
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           # workflow_dispatch 수동 trigger 시 force_build=true 면 영업시간 체크 우회
-          FORCE_BUILD: ${{ github.event.inputs.force_build == 'true' && '1' || '0' }}
+          FORCE_BUILD: ${{ inputs.force_build == true && '1' || '0' }}
 
       - name: Build closing mode (after 16 KST)
         run: |
@@ -59,18 +59,24 @@ jobs:
         env:
           TZ: Asia/Seoul
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
-          FORCE_BUILD: ${{ github.event.inputs.force_build == 'true' && '1' || '0' }}
+          FORCE_BUILD: ${{ inputs.force_build == true && '1' || '0' }}
 
       - name: Copy output to docs
         run: |
           mkdir -p docs
-          cp -r report/output/* docs/
+          # report/output 이 비어있어도 (영업시간 외 SKIP) fail 안 나도록 안전화
+          if [ -d "report/output" ] && [ -n "$(ls -A report/output 2>/dev/null)" ]; then
+            cp -r report/output/. docs/
+            echo "Copied $(ls report/output | wc -l) files to docs/"
+          else
+            echo "No output to copy (build was skipped or no files)"
+          fi
 
       - name: Commit and push
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add docs data/pension_report.db 2>/dev/null || true
+          git add docs data/pension_report.db data/dart_majorstock_cache.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
