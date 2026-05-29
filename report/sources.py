@@ -71,6 +71,387 @@ def fetch_todayygg_csv() -> Optional[str]:
         return None
 
 
+# ==========================================================================
+# 종목 자동 분류 (sector 가 빈 종목에 키워드/규칙 기반 sector 채움)
+# ==========================================================================
+ETF_PREFIXES = (
+    "KODEX ", "TIGER ", "ACE ", "KOACT", "RISE ", "HANARO ", "SOL ",
+    "1Q ", "PLUS ", "TIMEFOLIO", "WOORI", "KBSTAR", "MIRAE ASSET",
+    "SMART", "ARIRANG", "FOCUS", "히어로", "WON ", "PLUSPRO",
+)
+
+# 종목명 키워드 → sector 매핑 (앞쪽 매칭 우선)
+KEYWORD_SECTOR_MAP = [
+    # 반도체 (장비/소재/부품/PCB 포함)
+    (["반도체", "에스피", "하이닉스", "DB하이텍", "한미반도체", "이수페타시스",
+      "테스", "원익IPS", "원익Qnc", "원익QnC", "주성", "ISC", "리노공업",
+      "한솔케미칼", "솔브레인", "동진", "동운", "이오테크닉스", "넥스틴",
+      "테크윙", "에스앤에스텍", "피에스케이", "코미코", "티에스이",
+      "한양디지텍", "한양이엔지", "디엔에프", "비에이치", "디바이스",
+      "두산테스나", "원익머트리얼즈", "고영", "네패스", "GST", "오스코텍",
+      "예스티", "ISC", "한솔아이원스", "에이치브이엠", "삼화콘덴서",
+      "삼현", "비츠로셀", "에스앤에스텍", "파두", "쎄트렉아이"], "반도체"),
+    (["디스플레이", "LG디스플레이", "LX세미콘", "덕산네오룩스", "선익시스템",
+      "덕산하이메탈", "코세스"], "디스플레이"),
+
+    # 2차전지 / 배터리
+    (["2차전지", "이차전지", "배터리", "에코프로", "엘앤에프", "포스코퓨처엠",
+      "양극재", "음극재", "리튬", "코스모", "동화기업", "대주전자재료",
+      "삼성SDI", "LG에너지", "에코프로비엠", "에코프로머티"], "2차전지"),
+
+    # 바이오 / 제약
+    (["바이오", "제약", "팜", "메디", "치료제", "신약", "백신", "셀트리온",
+      "삼성바이오", "한미약품", "유한양행", "녹십자", "동아", "한올", "알테오젠",
+      "리가켐", "올릭스", "펩트론", "오스코텍", "에이비엘", "에이프릴바이오",
+      "엘앤씨바이오", "지투지바이오", "메디포스트", "한스바이오", "삼천당",
+      "리센스메디컬", "노바렉스", "에스티팜", "오름테라"], "바이오/제약"),
+
+    # 자동차
+    (["현대차", "기아", "현대모비스", "한온시스템", "HL만도", "한국타이어",
+      "현대글로비스", "현대위아", "현대로템", "자동차"], "자동차"),
+
+    # 방산 / 조선
+    (["방산", "디펜스", "에어로스페이스", "한화시스템", "한화에어로",
+      "한국항공우주", "LIG넥스원", "한화오션", "STX엔진"], "방산"),
+    (["HD한국조선", "HD현대중공업", "HD현대마린", "삼성중공업", "현대미포",
+      "조선", "한화엔진", "비에이치아이"], "조선"),
+
+    # 금융
+    (["은행", "지주", "증권", "투자증권", "보험", "캐피탈", "카드",
+      "KB금융", "신한지주", "하나금융", "우리금융", "iM금융", "BNK금융",
+      "삼성생명", "삼성화재", "DB손해보험", "현대해상", "메리츠금융",
+      "한국금융지주", "키움증권", "미래에셋", "NH투자", "삼성증권",
+      "유진투자", "교보증권", "신영증권", "DGB", "기업은행"], "금융"),
+
+    # IT / 소프트웨어 / 인터넷
+    (["NAVER", "네이버", "카카오", "엔씨", "넷마블", "크래프톤",
+      "더존비즈온", "하이브", "JYP", "위메이드", "SOOP", "SBS",
+      "엔터", "엔터테인먼트", "삼성에스디에스", "LG씨엔에스", "현대오토에버",
+      "더블유게임즈", "에스엠"], "IT/소프트웨어"),
+    (["통신", "SK텔레콤", "LG유플러스", "KT"], "미디어/통신"),
+    # 전기/전자 (반도체 외 일반 전자/가전/디스플레이 부품)
+    (["LG전자", "삼성전기", "LG이노텍", "삼화콘덴서", "대덕전자",
+      "HD현대일렉트릭", "LS ELECTRIC", "일진전기", "효성중공업",
+      "한화비전", "비에이치", "성호전자"], "전기/전자"),
+
+    # 화학 / 정유 / 소재
+    (["화학", "케미컬", "이수화학", "OCI", "효성티앤씨", "롯데케미칼",
+      "금호석유", "대한유화", "LG화학", "코오롱인더", "효성중공업",
+      "S-Oil", "SK이노베이션"], "화학/정유"),
+
+    # 철강 / 비철금속
+    (["POSCO", "포스코", "고려아연", "현대제철", "동국제강", "세아베스틸",
+      "풍산", "철강", "삼화콘덴서"], "철강/금속"),
+
+    # 식음료 / 소비재
+    (["식품", "푸드", "삼양", "오리온", "롯데칠성", "롯데쇼핑",
+      "현대백화점", "신세계", "이마트", "BGF리테일", "GS리테일",
+      "한섬", "F&F", "신세계인터", "코스맥스", "아모레", "한미글로벌"], "소비재/유통"),
+
+    # 건설 / 인프라
+    (["건설", "GS건설", "DL이앤씨", "삼성E&A", "현대건설", "대우건설",
+      "현대엘리베이터", "한샘", "한국전력", "한전기술", "한전KPS",
+      "한국가스공사", "씨에스윈드", "두산에너", "HD현대일렉트릭", "HD현대에너지"], "건설/인프라"),
+
+    # 농업 / 기타 산업재
+    (["산업", "엔진", "기계", "산일전기"], "산업재"),
+
+    # 부동산 / 리츠
+    (["리츠", "맥쿼리", "신한알파"], "부동산"),
+]
+
+
+# 허용된 깔끔한 sector 이름 목록 (이 안에 있거나 짧고 단순하면 통과)
+ALLOWED_SECTORS = {
+    "반도체", "디스플레이", "2차전지", "바이오/제약", "자동차", "방산", "조선",
+    "금융", "IT/소프트웨어", "IT/전자", "소프트웨어", "미디어/통신", "통신",
+    "화학/정유", "화학", "정유", "철강/금속", "소비재/유통", "소비재", "유통",
+    "음식료", "음식료/소비재", "건설/인프라", "건설", "산업재", "부동산",
+    "ETF/펀드", "ETF", "에너지", "유틸리티", "운송", "헬스케어", "화장품",
+    "농업", "광물", "기타",
+}
+
+
+def _is_clean_sector(sec: str) -> bool:
+    """sector 이름이 깔끔한지 판정."""
+    if not sec:
+        return False
+    if sec in ALLOWED_SECTORS:
+        return True
+    # 너무 길거나 dirty 패턴
+    if len(sec) > 10:
+        return False
+    if "(" in sec or ")" in sec:
+        return False
+    if sec.count(" ") > 1:
+        return False
+    return True   # 짧고 단순하면 통과
+
+
+# ==========================================================================
+# 네이버 금융 종목별 업종 스크래핑 (캐시 활용)
+# ==========================================================================
+NAVER_FINANCE_URL = "https://finance.naver.com/item/main.naver"
+
+# 네이버 업종 (WICS) → 우리 표준 카테고리 매핑
+NAVER_SECTOR_MAP = {
+    # 반도체 / 디스플레이
+    "반도체와반도체장비": "반도체",
+    "반도체장비": "반도체",
+    "반도체": "반도체",
+    "전자장비와기기": "전기/전자",
+    "전기제품": "전기/전자",
+    "전자제품": "전기/전자",
+    "전자부품": "전기/전자",
+    "디스플레이장비및부품": "디스플레이",
+    "디스플레이": "디스플레이",
+    "전기부품및연결장치": "전기/전자",
+    "전기조명": "전기/전자",
+    # 자동차
+    "자동차": "자동차",
+    "자동차부품": "자동차",
+    # 화학 / 정유
+    "화학": "화학/정유",
+    "정유": "화학/정유",
+    "석유와가스": "에너지",
+    "에너지장비및서비스": "에너지",
+    # 철강 / 금속
+    "철강": "철강/금속",
+    "금속과광업": "철강/금속",
+    "비철금속": "철강/금속",
+    # 금융
+    "은행": "금융",
+    "다각화된금융서비스": "금융",
+    "자본시장": "금융",
+    "소비자금융": "금융",
+    "보험": "금융",
+    "손해보험": "금융",
+    "생명보험": "금융",
+    "증권": "금융",
+    # IT / 소프트웨어
+    "소프트웨어": "IT/소프트웨어",
+    "응용소프트웨어": "IT/소프트웨어",
+    "시스템소프트웨어": "IT/소프트웨어",
+    "양방향미디어와서비스": "IT/소프트웨어",
+    "엔터테인먼트": "IT/소프트웨어",
+    "인터랙티브미디어및서비스": "IT/소프트웨어",
+    "정보기술서비스": "IT/소프트웨어",
+    "IT서비스": "IT/소프트웨어",
+    # 미디어 / 통신
+    "다각화된통신서비스": "미디어/통신",
+    "무선통신서비스": "미디어/통신",
+    "통신서비스": "미디어/통신",
+    "미디어": "미디어/통신",
+    "광고": "미디어/통신",
+    "방송과엔터테인먼트": "미디어/통신",
+    # 바이오 / 제약
+    "제약": "바이오/제약",
+    "생명과학도구및서비스": "바이오/제약",
+    "건강관리장비와용품": "바이오/제약",
+    "건강관리기술": "바이오/제약",
+    "건강관리업체및서비스": "바이오/제약",
+    "건강관리장비와서비스": "바이오/제약",
+    "바이오테크": "바이오/제약",
+    "생명공학": "바이오/제약",
+    # 음식료 / 소비재
+    "식품": "음식료/소비재",
+    "식품과기본식료품소매": "음식료/소비재",
+    "음료": "음식료/소비재",
+    "담배": "음식료/소비재",
+    # 소비재 / 유통
+    "가정용품": "소비재/유통",
+    "의류,신발및호화품": "소비재/유통",
+    "섬유,의류,신발및호화품": "소비재/유통",
+    "내구소비재와의류": "소비재/유통",
+    "백화점과일반상점": "소비재/유통",
+    "전문소매": "소비재/유통",
+    "복합기업": "소비재/유통",
+    "호텔,레스토랑,레저": "소비재/유통",
+    "여행과여가": "소비재/유통",
+    # 화장품
+    "화장품": "화장품",
+    "퍼스널케어": "화장품",
+    # 건설 / 인프라
+    "건설": "건설/인프라",
+    "건설업": "건설/인프라",
+    "건설과엔지니어링": "건설/인프라",
+    "건축자재": "건설/인프라",
+    "건축제품": "건설/인프라",
+    # 조선 / 방산
+    "조선": "조선",
+    "방위산업": "방산",
+    "항공우주와국방": "방산",
+    # 산업재
+    "기계": "산업재",
+    "산업재": "산업재",
+    "거래회사와판매업체": "산업재",
+    "사무용전자제품": "산업재",
+    "상업서비스와공급품": "산업재",
+    # 유틸리티
+    "전기유틸리티": "유틸리티",
+    "복합유틸리티": "유틸리티",
+    "가스유틸리티": "유틸리티",
+    "수도유틸리티": "유틸리티",
+    "독립전력생산및에너지거래업자": "유틸리티",
+    # 운송
+    "항공화물운송과물류": "운송",
+    "도로와철도": "운송",
+    "해운사": "운송",
+    "항공사": "운송",
+    "운송인프라": "운송",
+    # 부동산
+    "부동산": "부동산",
+    "부동산투자신탁": "부동산",
+    "부동산관리및개발": "부동산",
+    # 2차전지 / 에너지저장
+    "전기장비": "2차전지",   # LG에너지 등이 여기 분류됨
+}
+
+
+def fetch_naver_sector(stock_code: str) -> str:
+    """
+    네이버 금융 종목 페이지에서 WICS 업종 추출.
+    return: 업종명 (예: "반도체와반도체장비") 또는 "" 실패 시.
+    """
+    if not stock_code or not stock_code.isdigit() or len(stock_code) != 6:
+        return ""
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return ""
+    try:
+        r = requests.get(
+            NAVER_FINANCE_URL,
+            params={"code": stock_code},
+            headers=_HEADERS,
+            timeout=8,
+        )
+        r.raise_for_status()
+        r.encoding = "euc-kr"   # 네이버 금융은 euc-kr
+    except Exception:
+        return ""
+    soup = BeautifulSoup(r.text, "html.parser")
+    # 업종 링크 (a[href*="sise_group_detail"])
+    a = soup.find("a", href=lambda h: h and ("sise_group_detail" in h or "sise_group.naver" in h))
+    if a:
+        return a.get_text(strip=True)
+    # backup: section_strategy 안의 텍스트
+    section = soup.find("div", {"class": "wrap_company"})
+    if section:
+        link = section.find("a", href=lambda h: h and "WICS" in (h or ""))
+        if link:
+            return link.get_text(strip=True)
+    return ""
+
+
+def fetch_naver_sectors_bulk(stock_codes: list, cache_path: Optional[str] = None,
+                              max_new_fetches: int = 100) -> dict:
+    """
+    종목 코드 리스트에 대해 네이버 sector 일괄 fetch.
+    캐시 활용 + 신규 fetch 한도 (1회 빌드당 max_new_fetches).
+    return: {stock_code: standard_sector_name}  (표준 카테고리로 변환됨)
+    """
+    import json as _json
+    import time
+    # 캐시 로드
+    cache: dict = {}
+    if cache_path and os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cache = _json.load(f)
+        except Exception:
+            cache = {}
+    result = {}
+    new_fetches = 0
+    miss_codes = []
+    for code in stock_codes:
+        if code in cache:
+            cached_val = cache[code]
+            if cached_val:   # 빈 값은 다시 시도
+                result[code] = cached_val
+                continue
+        miss_codes.append(code)
+    # 미캐시 종목만 fetch (한도 내에서)
+    for code in miss_codes[:max_new_fetches]:
+        naver_raw = fetch_naver_sector(code)
+        # 네이버 업종 → 표준 카테고리
+        standard = NAVER_SECTOR_MAP.get(naver_raw, "")
+        cache[code] = standard or naver_raw or ""   # 빈 값도 캐시 (재시도 방지)
+        if standard:
+            result[code] = standard
+        new_fetches += 1
+        time.sleep(0.15)   # rate limit
+    # 캐시 저장
+    if cache_path and new_fetches > 0:
+        try:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                _json.dump(cache, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log.warning("네이버 sector 캐시 저장 실패: %s", e)
+    log.info("네이버 sector: %d 종목 (캐시 hit=%d, 신규 fetch=%d, miss=%d)",
+             len(result),
+             len(stock_codes) - len(miss_codes),
+             new_fetches,
+             max(0, len(miss_codes) - new_fetches))
+    return result
+
+
+def auto_classify_sector(stock_code: str, stock_name: str, existing: str = "") -> str:
+    """
+    sector 가 비어있을 때 종목명/코드 기반 자동 분류.
+    existing 이 채워져있으면 그대로 반환.
+    """
+    if existing and existing.strip():
+        return existing.strip()
+    if not stock_name:
+        return ""
+    name = stock_name.upper().strip()
+
+    # 1) ETF / 펀드
+    for p in ETF_PREFIXES:
+        if name.startswith(p.upper()):
+            return "ETF/펀드"
+
+    # 2) 키워드 매칭
+    for keywords, sector in KEYWORD_SECTOR_MAP:
+        for kw in keywords:
+            if kw.upper() in name:
+                return sector
+
+    return ""
+
+
+def fill_sector_for_preferred(rows: list):
+    """
+    우선주 (종목명에 "우", "우B" 끝, 코드 끝 5/7) → 본주의 sector 상속.
+    in-place 수정.
+    """
+    # 본주 매핑: 종목명에서 "우"/"우B" 제거한 이름 → sector
+    base_sector = {}
+    for r in rows:
+        name = (r.get("stock_name") or "").strip()
+        sec = (r.get("sector") or "").strip()
+        if sec and not name.endswith("우") and not name.endswith("우B"):
+            base_sector[name] = sec
+    # 우선주 sector 상속
+    filled = 0
+    for r in rows:
+        if r.get("sector"):
+            continue
+        name = (r.get("stock_name") or "").strip()
+        base_name = None
+        if name.endswith("우B"):
+            base_name = name[:-2].strip()
+        elif name.endswith("우"):
+            base_name = name[:-1].strip()
+        if base_name and base_name in base_sector:
+            r["sector"] = base_sector[base_name]
+            filled += 1
+    if filled:
+        log.info("우선주 sector 상속: %d 종목", filled)
+
+
 def parse_todayygg_csv(csv_text: str) -> list:
     """todayygg CSV → list of standard row dict."""
     import csv as csvlib
@@ -78,11 +459,27 @@ def parse_todayygg_csv(csv_text: str) -> list:
     if not csv_text:
         return []
     reader = csvlib.DictReader(io.StringIO(csv_text))
+    # CSV 컬럼명 진단용 로그 (한 번만)
+    if reader.fieldnames:
+        log.info("todayygg CSV fields (%d개): %s", len(reader.fieldnames), reader.fieldnames)
+    # sector 후보 키들 (영문/한글 둘 다 시도)
+    SECTOR_KEYS = ("sector", "industry", "category", "업종", "섹터", "분류",
+                   "sub_industry", "gics_sector", "stock_sector")
     rows = []
+    nonempty_sector = 0
     for r in reader:
         code = (r.get("symbol") or "").strip()
         if not code or not code.isdigit():
             continue
+        # sector: 여러 후보 키 시도
+        sector_val = ""
+        for k in SECTOR_KEYS:
+            v = r.get(k)
+            if v and str(v).strip():
+                sector_val = str(v).strip()
+                break
+        if sector_val:
+            nonempty_sector += 1
         rows.append({
             "stock_code": code,
             "stock_name": r.get("name", ""),
@@ -106,11 +503,12 @@ def parse_todayygg_csv(csv_text: str) -> list:
             "delta_net_amount":  _to_int(r.get("delta_net_buy_amount_vs_yesterday")),
             "net_vs_prev_vol_ratio":  _to_float(r.get("net_buy_vs_prev_volume_ratio")),
             "net_vs_prev_val_ratio":  _to_float(r.get("net_buy_amount_vs_prev_trade_value_ratio")),
-            "sector":  r.get("sector", ""),
+            "sector":  sector_val,
             "industry": r.get("industry", ""),
             "source": "todayygg-csv",
         })
-    log.info("todayygg CSV parsed: %d rows", len(rows))
+    log.info("todayygg CSV parsed: %d rows (sector 채워진 row: %d)",
+             len(rows), nonempty_sector)
     return rows
 
 
@@ -622,10 +1020,9 @@ def fetch_auto(merge_judal: bool = True, merge_toss_prices: bool = True,
         except Exception:
             log.exception("dart merge failed (계속 진행)")
 
-    # 2) judal 가치지표 머지 (코드 우선, 종목명 fallback)
+    # 2) judal 가치지표 머지 (sector 는 채우지 않음 — judal theme 은 구분자 없는 긴 문자열이라 dirty)
     if merge_judal:
         judal_map = fetch_judal_both()
-        # 종목명 → judal_row 부수 인덱스 (코드로 못 찾을 때 fallback)
         judal_by_name = {}
         for jr in judal_map.values():
             n = jr.get("stock_name")
@@ -643,12 +1040,58 @@ def fetch_auto(merge_judal: bool = True, merge_toss_prices: bool = True,
                 r["expected_return"] = jr.get("expected_return")
                 r["theme"] = jr.get("theme") or r.get("theme", "")
                 merged += 1
-        log.info("judal merged: %d/%d (judal codes=%d, names=%d)",
-                 merged, len(rows),
-                 sum(1 for k in judal_map if k and not k[0].isdigit() == False),
-                 len(judal_by_name))
+        log.info("judal merged: %d/%d", merged, len(rows))
         if merged > 0:
             sources_used.append("judal")
+
+    # 3) sector 정리 — 키워드 매핑 우선 (CSV sector 가 dirty/잘못된 경우 덮어씀)
+    auto_classified = 0
+    overridden = 0
+    for r in rows:
+        sec = (r.get("sector") or "").strip()
+        keyword_sec = auto_classify_sector(r.get("stock_code", ""), r.get("stock_name", ""))
+        if keyword_sec:
+            if sec != keyword_sec:
+                if sec:
+                    overridden += 1
+                else:
+                    auto_classified += 1
+                r["sector"] = keyword_sec
+        elif not _is_clean_sector(sec):
+            # 키워드 매핑 실패 + CSV sector 도 dirty
+            r["sector"] = ""   # 빈 값으로 → 다음 단계 네이버 fetch 대상
+    log.info("sector 키워드 매핑: %d 신규, %d 덮어씀", auto_classified, overridden)
+
+    # 4) 우선주 → 본주 sector 상속
+    fill_sector_for_preferred(rows)
+
+    # 5) 여전히 빈 sector 종목 → 네이버 금융에서 보충 (캐시 + 한도 100건/빌드)
+    missing_codes = [r["stock_code"] for r in rows
+                      if not r.get("sector") and r.get("stock_code", "").isdigit()
+                      and len(r.get("stock_code", "")) == 6]
+    if missing_codes:
+        try:
+            import os as _os
+            cache_path = _os.path.join(
+                _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                "data", "sector_cache.json"
+            )
+            naver_map = fetch_naver_sectors_bulk(
+                missing_codes, cache_path=cache_path, max_new_fetches=100,
+            )
+            naver_filled = 0
+            for r in rows:
+                if not r.get("sector") and r["stock_code"] in naver_map:
+                    r["sector"] = naver_map[r["stock_code"]]
+                    naver_filled += 1
+            log.info("네이버 sector 보충: %d 종목 채움", naver_filled)
+        except Exception as e:
+            log.warning("네이버 sector 보충 실패: %s", e)
+
+    # 최종 sector 채워진 비율
+    final_filled = sum(1 for r in rows if r.get("sector"))
+    log.info("sector 최종: %d/%d (%.0f%%)",
+             final_filled, len(rows), 100 * final_filled / max(len(rows), 1))
 
     # trade_date 결정: 토스 trading-trend의 base_date(오늘 데이터)가 있으면 그것 우선
     final_trade_date = intraday_base_date.replace("-", "") if intraday_base_date else trade_date

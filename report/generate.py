@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS pension_daily_report (
     net_qty     INTEGER NOT NULL DEFAULT 0,
     market_cap  INTEGER NOT NULL DEFAULT 0,
     close_price INTEGER NOT NULL DEFAULT 0,
+    sector      TEXT    NOT NULL DEFAULT '',
     fetched_at  TEXT NOT NULL,
     PRIMARY KEY (trade_date, stock_code)
 );
@@ -89,6 +90,9 @@ def _migrate_schema(conn):
     if "close_price" not in cols:
         cur.execute("ALTER TABLE pension_daily_report ADD COLUMN close_price INTEGER NOT NULL DEFAULT 0")
         log.info("DB 마이그레이션: close_price 컬럼 추가됨")
+    if "sector" not in cols:
+        cur.execute("ALTER TABLE pension_daily_report ADD COLUMN sector TEXT NOT NULL DEFAULT ''")
+        log.info("DB 마이그레이션: sector 컬럼 추가됨")
     conn.commit()
 
 
@@ -108,11 +112,12 @@ def upsert_pension_daily(conn, trade_date: str, market: str, rows: list, cap_map
             continue
         mcap = cap_map.get(r["stock_code"], 0)
         close = int(r.get("close_price", 0) or 0)
+        sector = (r.get("sector") or "").strip()
         cur.execute("""
             INSERT INTO pension_daily_report
               (trade_date, stock_code, stock_name, market, buy_amount, sell_amount, net_amount,
-               buy_qty, sell_qty, net_qty, market_cap, close_price, fetched_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+               buy_qty, sell_qty, net_qty, market_cap, close_price, sector, fetched_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(trade_date, stock_code) DO UPDATE SET
               stock_name = excluded.stock_name,
               market = excluded.market,
@@ -124,12 +129,13 @@ def upsert_pension_daily(conn, trade_date: str, market: str, rows: list, cap_map
               net_qty = excluded.net_qty,
               market_cap = excluded.market_cap,
               close_price = CASE WHEN excluded.close_price > 0 THEN excluded.close_price ELSE pension_daily_report.close_price END,
+              sector = CASE WHEN excluded.sector != '' THEN excluded.sector ELSE pension_daily_report.sector END,
               fetched_at = excluded.fetched_at
         """, (
             trade_date, r["stock_code"], r["stock_name"], market,
             r["buy_amount"], r["sell_amount"], r["net_amount"],
             r["buy_qty"], r["sell_qty"], r["net_qty"],
-            mcap, close, now,
+            mcap, close, sector, now,
         ))
     conn.commit()
 
@@ -442,7 +448,7 @@ def aggregate_by_sector(rows: list, sector_field: str = "sector") -> list:
     """
     by_sector = {}
     for r in rows:
-        sec = (r.get(sector_field) or "").strip() or "미분류"
+        sec = _clean_sector_name((r.get(sector_field) or "").strip())
         if sec not in by_sector:
             by_sector[sec] = {
                 "sector": sec,
@@ -580,6 +586,187 @@ def build_continuity_data(rows: list = None, min_days: int = 2,
     return items[:200]
 
 
+# 표준 sector 카테고리 (이것만 사용)
+_ALLOWED_SECTORS = {
+    "반도체", "디스플레이", "2차전지", "바이오/제약", "자동차", "방산", "조선",
+    "금융", "IT/소프트웨어", "전기/전자", "미디어/통신",
+    "화학/정유", "철강/금속", "소비재/유통", "음식료/소비재",
+    "건설/인프라", "산업재", "부동산", "ETF/펀드",
+    "에너지", "유틸리티", "운송", "헬스케어", "화장품", "기타",
+}
+
+# 별칭 → 표준 이름 매핑 (중복 카테고리 통합)
+_SECTOR_ALIASES = {
+    "소프트웨어":   "IT/소프트웨어",
+    "IT":          "IT/소프트웨어",
+    "인터넷":       "IT/소프트웨어",
+    "IT/전자":     "전기/전자",
+    "전자":        "전기/전자",
+    "전기전자":     "전기/전자",
+    "통신":        "미디어/통신",
+    "미디어":       "미디어/통신",
+    "음식료":       "음식료/소비재",
+    "유통":        "소비재/유통",
+    "소비재":       "소비재/유통",
+    "ETF":         "ETF/펀드",
+    "펀드":        "ETF/펀드",
+    "화학":        "화학/정유",
+    "정유":        "화학/정유",
+    "철강":        "철강/금속",
+    "건설":        "건설/인프라",
+    "농업":        "기타",   # 종목 수 적어서 통합
+    "광물":        "철강/금속",
+}
+
+
+def _clean_sector_name(sec: str) -> str:
+    """sector 이름 정규화: 별칭→표준, dirty→'기타'."""
+    if not sec:
+        return "기타"
+    sec = sec.strip()
+    # 별칭 매핑 우선
+    if sec in _SECTOR_ALIASES:
+        return _SECTOR_ALIASES[sec]
+    if sec in _ALLOWED_SECTORS:
+        return sec
+    # dirty 패턴
+    if len(sec) > 10:
+        return "기타"
+    if "(" in sec or ")" in sec:
+        return "기타"
+    if sec.count(" ") > 1:
+        return "기타"
+    return sec   # 짧고 단순하면 통과 (혹시 새 카테고리 일 수도)
+
+
+def query_sector_aggregates(days_offset: int = 0, days_count: int = 1) -> list:
+    """
+    DB 의 sector 별 집계. distinct trade_date 기준 영업일 슬라이스.
+    days_offset=0, days_count=1 → 가장 최근 영업일 (오늘)
+    days_offset=1, days_count=1 → 그 직전 영업일 (어제)
+    days_offset=0, days_count=7 → 최근 7 영업일 누적
+    return: [{sector, count, buy, sell, net, buy_stocks, sell_stocks}, ...] (net desc)
+    """
+    conn = _db_conn()
+    dates = conn.execute("""
+        SELECT DISTINCT trade_date FROM pension_daily_report
+        ORDER BY trade_date DESC LIMIT 30
+    """).fetchall()
+    dates = [r[0] for r in dates]
+    if days_offset >= len(dates):
+        conn.close()
+        return []
+    target_dates = dates[days_offset:days_offset + days_count]
+    if not target_dates:
+        conn.close()
+        return []
+    placeholders = ",".join("?" * len(target_dates))
+    # 종목 단위로 가져옴 — Python 에서 종목명 기반 재분류 후 sector 별 그룹핑
+    rows = conn.execute(f"""
+        SELECT
+          stock_code,
+          MAX(stock_name) AS stock_name,
+          MAX(sector) AS sector,
+          SUM(buy_amount)  AS buy,
+          SUM(sell_amount) AS sell,
+          SUM(net_amount)  AS net
+        FROM pension_daily_report
+        WHERE trade_date IN ({placeholders})
+        GROUP BY stock_code
+        HAVING SUM(buy_amount) + SUM(sell_amount) > 0
+    """, target_dates).fetchall()
+    conn.close()
+
+    # 종목명 기반 재분류 → sector 별 그룹핑
+    from report.sources import auto_classify_sector
+    grouped = {}
+    for r in rows:
+        # 1) 키워드 매핑 우선 (한양디지텍 등 명시 매핑)
+        sec = auto_classify_sector(r["stock_code"], r["stock_name"])
+        # 2) 매핑 실패 시 DB sector 를 _clean 한 값
+        if not sec:
+            sec = _clean_sector_name(r["sector"] or "")
+        if sec not in grouped:
+            grouped[sec] = {
+                "sector": sec, "count": 0, "buy": 0, "sell": 0, "net": 0,
+                "buy_stocks": 0, "sell_stocks": 0,
+            }
+        g = grouped[sec]
+        g["count"] += 1
+        g["buy"] += r["buy"] or 0
+        g["sell"] += r["sell"] or 0
+        g["net"] += r["net"] or 0
+        net = r["net"] or 0
+        if net > 0:
+            g["buy_stocks"] += 1
+        elif net < 0:
+            g["sell_stocks"] += 1
+    return sorted(grouped.values(), key=lambda x: x["net"], reverse=True)
+
+
+def query_sector_stocks_for_period(days_offset: int = 0, days_count: int = 1) -> dict:
+    """
+    DB 기간 안의 sector 별 종목 누적 데이터.
+    return: {sector: [{code, name, market, net, net_to_cap, ...}, ...]}
+    """
+    conn = _db_conn()
+    dates = conn.execute("""
+        SELECT DISTINCT trade_date FROM pension_daily_report
+        ORDER BY trade_date DESC LIMIT 30
+    """).fetchall()
+    dates = [r[0] for r in dates]
+    if days_offset >= len(dates):
+        conn.close()
+        return {}
+    target = dates[days_offset:days_offset + days_count]
+    if not target:
+        conn.close()
+        return {}
+    ph = ",".join("?" * len(target))
+    rows = conn.execute(f"""
+        SELECT
+          stock_code,
+          MAX(stock_name) AS stock_name,
+          MAX(market) AS market,
+          MAX(sector) AS sector,
+          SUM(net_amount) AS net,
+          MAX(market_cap) AS market_cap,
+          MAX(close_price) AS close_price,
+          COUNT(DISTINCT trade_date) AS day_count
+        FROM pension_daily_report
+        WHERE trade_date IN ({ph})
+        GROUP BY stock_code
+        HAVING SUM(net_amount) != 0
+    """, target).fetchall()
+    conn.close()
+
+    stocks_by_sec = {}
+    for r in rows:
+        sec = _clean_sector_name(r["sector"] or "")
+        cap = r["market_cap"] or 0
+        net = r["net"] or 0
+        net_to_cap = (net / cap * 100) if cap > 0 else 0
+        item = {
+            "code": r["stock_code"],
+            "name": r["stock_name"],
+            "market": r["market"],
+            "net": net,
+            "net_to_cap": round(net_to_cap, 4),
+            "today_buy_avg": 0,
+            "period_buy_avg": 0,
+            "period_start": "",
+            "period_end": "",
+            "change_rate": 0,
+            "close_price": r["close_price"] or 0,
+            "day_count": r["day_count"] or 0,
+        }
+        stocks_by_sec.setdefault(sec, []).append(item)
+
+    for sec in stocks_by_sec:
+        stocks_by_sec[sec].sort(key=lambda x: x["net"], reverse=True)
+    return stocks_by_sec
+
+
 def build_theme_data(rows: list) -> dict:
     """
     테마 페이지용 JSON 페이로드.
@@ -592,7 +779,7 @@ def build_theme_data(rows: list) -> dict:
     aggs = aggregate_by_sector(rows, "sector")
     stocks_by_sec = {}
     for r in rows:
-        sec = (r.get("sector") or "").strip() or "미분류"
+        sec = _clean_sector_name((r.get("sector") or "").strip())
         stocks_by_sec.setdefault(sec, []).append({
             "code": r["stock_code"],
             "name": r["stock_name"],
@@ -1354,8 +1541,21 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
     mode_active_cont = "active" if mode == "continuity" else ""
     auto_refresh_meta = '<meta http-equiv="refresh" content="3600">' if mode == "realtime" else ''
 
-    # 테마 페이지 데이터 (mode=='themes' 일 때만 큰 페이로드 생성)
-    theme_data_json = json.dumps(build_theme_data(rows), ensure_ascii=False) if mode == "themes" else "{}"
+    # 테마 페이지 데이터 (mode=='themes' 일 때만 큰 페이로드 생성, 3개 기간)
+    if mode == "themes":
+        today_data = build_theme_data(rows)
+        yesterday_aggs = query_sector_aggregates(days_offset=1, days_count=1)
+        yesterday_stocks = query_sector_stocks_for_period(days_offset=1, days_count=1)
+        week_aggs = query_sector_aggregates(days_offset=0, days_count=7)
+        week_stocks = query_sector_stocks_for_period(days_offset=0, days_count=7)
+        theme_data_multi = {
+            "today":     today_data,
+            "yesterday": {"sectors": yesterday_aggs, "stocks_by_sector": yesterday_stocks},
+            "week":      {"sectors": week_aggs,      "stocks_by_sector": week_stocks},
+        }
+        theme_data_json = json.dumps(theme_data_multi, ensure_ascii=False)
+    else:
+        theme_data_json = "{}"
     # 연속 누적 페이지 데이터 (mode=='continuity' 일 때만, DB 시계열 기반)
     continuity_items = build_continuity_data(min_days=2) if mode == "continuity" else []
     continuity_data_json = json.dumps(continuity_items, ensure_ascii=False)
@@ -1928,6 +2128,19 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   .theme-chart-section h2, .theme-table-section h2, .theme-stocks-section h2 {{ margin-top: 0; }}
   .theme-note {{ font-size: 11px; color: #7f8c8d; margin: 2px 0 8px; }}
 
+  /* 기간 토글 탭 */
+  .theme-period-tabs {{
+    display: flex; gap: 4px; background: #f8f9fa; border-radius: 6px;
+    padding: 3px; margin: 6px 0 10px; width: fit-content;
+  }}
+  .theme-period-tabs button {{
+    padding: 6px 14px; border: 0; background: transparent;
+    border-radius: 4px; cursor: pointer; font-size: 12px;
+    color: #7f8c8d; font-weight: 500;
+  }}
+  .theme-period-tabs button.active {{ background: #3498db; color: white; }}
+  .theme-period-tabs button:hover:not(.active) {{ background: #ecf0f1; color: #2c3e50; }}
+
   /* 매수/매도 차트 두 개 세로 스택 */
   .theme-chart-stack {{ display: flex; flex-direction: column; gap: 14px; flex: 1; }}
   .theme-chart-sub h3 {{
@@ -1936,8 +2149,8 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   }}
   .theme-chart-sub.buy h3 {{ background: #fde9e7; color: #c0392b; }}
   .theme-chart-sub.sell h3 {{ background: #e3f0fa; color: #2471a3; }}
-  .theme-chart-sub .chart-wrap {{ height: 340px; }}
-  @media (max-width: 700px) {{ .theme-chart-sub .chart-wrap {{ height: 240px; }} }}
+  .theme-chart-sub .chart-wrap {{ height: 320px; }}
+  @media (max-width: 700px) {{ .theme-chart-sub .chart-wrap {{ height: 220px; }} }}
 
   /* 표는 차트가 길어지면 같이 늘어남 (height match) */
   .theme-table-section {{ overflow: hidden; }}
@@ -2146,8 +2359,13 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
 
 <div class="themes-grid">
   <section class="theme-chart-section">
-    <h2>오늘 테마별 순매수/순매도</h2>
-    <p class="theme-note">sector 분류 기준. 막대 또는 우측 표 행 클릭 → 하단에 그 테마 구성 종목 표시.</p>
+    <h2>테마별 순매수/순매도</h2>
+    <p class="theme-note">막대 또는 우측 표 행 클릭 → 하단 종목.</p>
+    <div class="theme-period-tabs">
+      <button class="theme-period-tab active" data-period="today">📅 오늘</button>
+      <button class="theme-period-tab" data-period="yesterday">📆 어제</button>
+      <button class="theme-period-tab" data-period="week">📊 최근 7거래일</button>
+    </div>
     <div class="theme-chart-stack">
       <div class="theme-chart-sub buy">
         <h3>📈 순매수 Top 10</h3>
@@ -2711,11 +2929,12 @@ searchClear.addEventListener('click', () => {{
 // ============================================================
 (function() {{
   if (!window.location.pathname.endsWith('themes.html')) return;
-  const themeData = {theme_data_json};
-  if (!themeData || !themeData.sectors || themeData.sectors.length === 0) return;
+  const themeDataMulti = {theme_data_json};
+  if (!themeDataMulti || !themeDataMulti.today) return;
 
-  const sectors = themeData.sectors;
-  const stocksBy = themeData.stocks_by_sector || {{}};
+  // 현재 활성 기간 (오늘 default)
+  let currentPeriod = 'today';
+  let currentData = themeDataMulti.today;
 
   const fmtBillion = (n) => {{
     const abs = Math.abs(n);
@@ -2726,12 +2945,11 @@ searchClear.addEventListener('click', () => {{
   }};
   const fmtNum = n => (n || 0).toLocaleString();
 
-  // ---- 차트 (매수/매도 분리) ----
-  // sectors 는 net desc 정렬 — buy = filter net>0 의 앞에서 10, sell = filter net<0 끝에서 10 (|net| 큰 순)
-  const buyChartData = sectors.filter(s => (s.net || 0) > 0).slice(0, 10);
-  const sellChartData = sectors.filter(s => (s.net || 0) < 0).slice(-10).reverse();
+  // ---- 매수/매도 차트 두 개 분리 ----
+  let chartBuy = null;
+  let chartSell = null;
 
-  function makeThemeChart(canvasId, data, color, isBuy) {{
+  function makeOneChart(canvasId, data, color, isBuy) {{
     const ctx = document.getElementById(canvasId);
     if (!ctx || typeof Chart === 'undefined' || data.length === 0) return null;
     return new Chart(ctx, {{
@@ -2740,15 +2958,13 @@ searchClear.addEventListener('click', () => {{
         labels: data.map(s => s.sector),
         datasets: [{{
           label: isBuy ? '순매수 (억원)' : '순매도 (억원)',
-          // 매도는 음수로 → 막대가 0 라인 아래로 향함
           data: data.map(s => {{
             const eok = Math.round(Math.abs(s.net || 0) / 1e8 * 10) / 10;
-            return isBuy ? eok : -eok;
+            return isBuy ? eok : -eok;   // 매도는 음수로 → 막대 아래로
           }}),
           backgroundColor: color.bg,
           borderColor: color.border,
           borderWidth: 1,
-          // 막대 두께 줄임 (시각 효과 개선)
           barPercentage: 0.55,
           categoryPercentage: 0.85,
           borderRadius: 4,
@@ -2774,12 +2990,10 @@ searchClear.addEventListener('click', () => {{
             ticks: {{ callback: v => v.toLocaleString() + '억', font: {{ size: 10 }} }},
             grid: {{ color: 'rgba(0,0,0,0.06)' }},
             beginAtZero: true,
-            // 매도 차트는 max=0, 아래로만 / 매수 차트는 min=0, 위로만
             ...(isBuy ? {{ min: 0 }} : {{ max: 0 }}),
           }},
           x: {{
-            // 매도 차트의 x 축 라벨은 위쪽 (0 라인 옆) — 막대가 아래로 향하므로
-            position: isBuy ? 'bottom' : 'top',
+            position: isBuy ? 'bottom' : 'top',   // 매도는 라벨이 위
             ticks: {{ font: {{ size: 10 }}, maxRotation: 35, minRotation: 25 }},
             grid: {{ display: false }},
           }},
@@ -2788,26 +3002,40 @@ searchClear.addEventListener('click', () => {{
     }});
   }}
 
-  makeThemeChart('theme-chart-buy', buyChartData,
-    {{ bg: 'rgba(231, 76, 60, 0.7)', border: '#c0392b' }}, true);
-  makeThemeChart('theme-chart-sell', sellChartData,
-    {{ bg: 'rgba(52, 152, 219, 0.7)', border: '#2980b9' }}, false);
+  function renderCharts(sectors) {{
+    // 기존 차트 destroy
+    if (chartBuy)  {{ chartBuy.destroy();  chartBuy = null; }}
+    if (chartSell) {{ chartSell.destroy(); chartSell = null; }}
+    const buyData = sectors.filter(s => (s.net || 0) > 0).slice(0, 10);
+    const sellData = sectors.filter(s => (s.net || 0) < 0).slice(-10).reverse();
+    chartBuy  = makeOneChart('theme-chart-buy',  buyData,
+      {{ bg: 'rgba(231, 76, 60, 0.75)', border: '#c0392b' }}, true);
+    chartSell = makeOneChart('theme-chart-sell', sellData,
+      {{ bg: 'rgba(52, 152, 219, 0.75)', border: '#2980b9' }}, false);
+  }}
 
   // ---- 요약 표 ----
   const summaryBody = document.getElementById('theme-summary-body');
-  if (summaryBody) {{
+  function renderSummaryTable(sectors) {{
+    if (!summaryBody) return;
+    if (!sectors || sectors.length === 0) {{
+      summaryBody.innerHTML = '<tr><td colspan="8" class="empty">이 기간 데이터 없음 (DB 누적 후 표시)</td></tr>';
+      return;
+    }}
     summaryBody.innerHTML = sectors.map((s, i) => `
       <tr data-sector="${{s.sector}}">
         <td>${{i + 1}}</td>
         <td>${{s.sector}}</td>
-        <td class="num">${{s.count}}</td>
-        <td class="num">${{fmtBillion(s.buy)}}</td>
-        <td class="num">${{fmtBillion(s.sell)}}</td>
-        <td class="num ${{s.net >= 0 ? 'pos' : 'neg'}}" data-value="${{s.net}}">${{fmtBillion(s.net)}}</td>
-        <td class="num pos">${{s.buy_stocks}}</td>
-        <td class="num neg">${{s.sell_stocks}}</td>
+        <td class="num" data-value="${{s.count || 0}}">${{s.count || 0}}</td>
+        <td class="num" data-value="${{s.buy || 0}}">${{fmtBillion(s.buy || 0)}}</td>
+        <td class="num" data-value="${{s.sell || 0}}">${{fmtBillion(s.sell || 0)}}</td>
+        <td class="num ${{(s.net || 0) >= 0 ? 'pos' : 'neg'}}" data-value="${{s.net || 0}}">${{fmtBillion(s.net || 0)}}</td>
+        <td class="num pos" data-value="${{s.buy_stocks || 0}}">${{s.buy_stocks || 0}}</td>
+        <td class="num neg" data-value="${{s.sell_stocks || 0}}">${{s.sell_stocks || 0}}</td>
       </tr>
     `).join('');
+  }}
+  if (summaryBody) {{
     summaryBody.addEventListener('click', e => {{
       const tr = e.target.closest('tr[data-sector]');
       if (!tr) return;
@@ -2815,13 +3043,73 @@ searchClear.addEventListener('click', () => {{
     }});
   }}
 
+  // ---- 기간 변경 ----
+  function switchPeriod(period) {{
+    currentPeriod = period;
+    currentData = themeDataMulti[period] || {{sectors: [], stocks_by_sector: {{}}}};
+    const sectors = currentData.sectors || [];
+
+    // 미분류 비중 계산 (어제/7일은 sector 누적 전이라 미분류 위주일 수 있음)
+    const totalAbs = sectors.reduce((s, x) => s + Math.abs(x.net || 0), 0);
+    const uncatRow = sectors.find(x => x.sector === '기타');
+    const uncatShare = (uncatRow && totalAbs > 0)
+      ? (Math.abs(uncatRow.net || 0) / totalAbs * 100).toFixed(0)
+      : 0;
+
+    // 안내 텍스트 동적 갱신
+    const note = document.querySelector('.theme-note');
+    if (note) {{
+      if (period === 'today') {{
+        note.innerHTML = '0 라인 위 = 매수(빨강), 아래 = 매도(파랑). 막대 또는 우측 표 행 클릭 → 하단 종목.';
+      }} else if (period === 'yesterday') {{
+        if (sectors.length <= 1 || uncatShare >= 80) {{
+          note.innerHTML = `⚠ <b>어제</b> — sector 정보는 오늘 빌드부터 DB 저장 시작. 어제 데이터는 sector 정보가 없어 <b>"기타" 위주</b> (${{uncatShare}}%) 로 표시됨. <b>다음 영업일부터 정상</b>.`;
+        }} else {{
+          note.innerHTML = '📆 어제 sector 별 집계 (기타 비중: ' + uncatShare + '%)';
+        }}
+      }} else if (period === 'week') {{
+        if (uncatShare >= 50) {{
+          note.innerHTML = `⚠ <b>최근 7거래일</b> — sector 정보 누적 시작 중. 현재 기타 비중 ${{uncatShare}}%. <b>약 1주 후</b> 모든 종목 정상 분류.`;
+        }} else {{
+          note.innerHTML = '📊 최근 7거래일 sector 별 누적 (기타: ' + uncatShare + '%)';
+        }}
+      }}
+    }}
+
+    // 차트 두 개 갱신 (매수/매도)
+    renderCharts(sectors);
+    // 표 갱신
+    renderSummaryTable(sectors);
+    // 종목 표: 1위 sector 자동 선택 (어제/7일도 stocks 데이터 있음)
+    if (sectors.length > 0) {{
+      selectTheme(sectors[0].sector);
+    }} else {{
+      document.getElementById('selected-theme-name').textContent = '데이터 없음';
+      document.getElementById('theme-stocks-body').innerHTML = '<tr><td colspan="8" class="empty">데이터 없음</td></tr>';
+    }}
+  }}
+
+  // 탭 클릭 핸들러
+  document.querySelectorAll('.theme-period-tab').forEach(btn => {{
+    btn.addEventListener('click', () => {{
+      document.querySelectorAll('.theme-period-tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      switchPeriod(btn.dataset.period);
+    }});
+  }});
+
+  // 초기 변수
+  const sectors = currentData.sectors || [];
+  const stocksBy = currentData.stocks_by_sector || {{}};
+
   // ---- 종목 표 ----
   function selectTheme(sec) {{
     document.getElementById('selected-theme-name').textContent = sec;
     document.querySelectorAll('.theme-summary-table tr[data-sector]').forEach(tr => {{
       tr.classList.toggle('selected', tr.dataset.sector === sec);
     }});
-    const stocks = stocksBy[sec] || [];
+    // currentData 의 stocks_by_sector 사용 (기간 토글 반영)
+    const stocks = (currentData.stocks_by_sector || {{}})[sec] || [];
     const body = document.getElementById('theme-stocks-body');
     if (!body) return;
     if (stocks.length === 0) {{
@@ -2861,10 +3149,8 @@ searchClear.addEventListener('click', () => {{
     if (typeof applyStockFilter === 'function') applyStockFilter();
   }}
 
-  // 초기: 순매수 1위 테마 자동 선택
-  if (sectors.length > 0) {{
-    selectTheme(sectors[0].sector);
-  }}
+  // 초기 렌더: 오늘 데이터로 차트/표/종목 모두 그림
+  switchPeriod('today');
 }})();
 
 // ============================================================
