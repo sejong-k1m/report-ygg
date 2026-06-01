@@ -284,49 +284,76 @@ def fetch_major_holdings(stock_code: str) -> list:
 def fetch_major_holdings_bulk(
     stock_codes: list,
     cache_path: Optional[str] = None,
-    cache_ttl_hours: int = 12,
+    cache_ttl_hours: int = 168,    # 1주일 캐시 (5%룰 공시는 자주 안 바뀜)
+    max_new_fetches: int = 50,      # 1회 빌드당 신규 fetch 한도 (timeout 회피)
 ) -> dict:
-    """여러 종목 대량보유공시 일괄 fetch + 디스크 캐시."""
+    """
+    여러 종목 대량보유공시 일괄 fetch + 디스크 캐시 + 한도.
+    한도 (max_new_fetches): 1회 빌드당 신규 fetch 종목 수 제한.
+    캐시 hit 종목은 즉시 반환, miss 종목은 한도 내에서만 fetch.
+    """
     if not get_api_key():
         return {}
-    cache_data: dict = {"fetched_at": "", "data": {}}
+    import json as _json
+    cache_data: dict = {"fetched_at": "", "data": {}, "per_code_ts": {}}
     if cache_path and os.path.exists(cache_path):
         try:
-            import json as _json
             with open(cache_path, "r", encoding="utf-8") as f:
                 cache_data = _json.load(f)
-        except Exception:
-            cache_data = {"fetched_at": "", "data": {}}
-    fresh = False
-    if cache_data.get("fetched_at"):
-        try:
-            fetched = dt.datetime.fromisoformat(cache_data["fetched_at"])
-            if (dt.datetime.now() - fetched).total_seconds() < cache_ttl_hours * 3600:
-                fresh = True
+                if "per_code_ts" not in cache_data:
+                    cache_data["per_code_ts"] = {}
         except Exception:
             pass
-    if fresh and cache_data.get("data"):
-        log.info("DART majorstock 캐시 사용 (TTL %dh 이내, %d 종목)",
-                 cache_ttl_hours, len(cache_data["data"]))
-        return cache_data["data"]
-    load_corp_code_map()
-    result: dict = {}
-    hit = 0
+    cached = cache_data.get("data", {}) or {}
+    per_ts = cache_data.get("per_code_ts", {}) or {}
+    now = dt.datetime.now()
+    ttl_seconds = cache_ttl_hours * 3600
+
+    # 캐시 hit 분류
+    result = {}
+    miss_codes = []
     for code in stock_codes:
         if not code:
             continue
+        ts_str = per_ts.get(code)
+        is_fresh = False
+        if ts_str:
+            try:
+                ts = dt.datetime.fromisoformat(ts_str)
+                if (now - ts).total_seconds() < ttl_seconds:
+                    is_fresh = True
+            except Exception:
+                pass
+        if is_fresh:
+            if code in cached and cached[code]:
+                result[code] = cached[code]
+            # 캐시는 fresh 지만 빈 결과 — 재시도 안 함
+            continue
+        miss_codes.append(code)
+
+    # 한도 내에서 신규 fetch
+    load_corp_code_map() if miss_codes else None
+    new_fetches = 0
+    for code in miss_codes[:max_new_fetches]:
         items = fetch_major_holdings(code)
+        cached[code] = items or []
+        per_ts[code] = now.isoformat()
         if items:
             result[code] = items
-            hit += 1
-    log.info("DART majorstock fetch 완료: %d/%d 종목 hit", hit, len(stock_codes))
-    if cache_path:
+        new_fetches += 1
+
+    log.info("DART majorstock: %d hit (캐시), %d 신규 fetch, %d miss (다음 빌드)",
+             len(stock_codes) - len(miss_codes), new_fetches,
+             max(0, len(miss_codes) - new_fetches))
+
+    if cache_path and new_fetches > 0:
         try:
-            import json as _json
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
             with open(cache_path, "w", encoding="utf-8") as f:
                 _json.dump(
-                    {"fetched_at": dt.datetime.now().isoformat(), "data": result},
+                    {"fetched_at": now.isoformat(),
+                     "data": cached,
+                     "per_code_ts": per_ts},
                     f, ensure_ascii=False, indent=2,
                 )
         except Exception as e:

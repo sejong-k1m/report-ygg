@@ -1379,7 +1379,7 @@ def fetch_auto(merge_judal: bool = True, merge_toss_prices: bool = True,
                 "data", "sector_cache.json"
             )
             naver_map = fetch_naver_sectors_bulk(
-                missing_codes, cache_path=cache_path, max_new_fetches=100,
+                missing_codes, cache_path=cache_path, max_new_fetches=30,
             )
             naver_filled = 0
             for r in rows:
