@@ -23,7 +23,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -45,7 +45,7 @@ jobs:
           TZ: Asia/Seoul
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           # workflow_dispatch 수동 trigger 시 force_build=true 면 영업시간 체크 우회
-          FORCE_BUILD: ${{ inputs.force_build == true && '1' || '0' }}
+          FORCE_BUILD: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
 
       - name: Build closing mode (after 16 KST)
         run: |
@@ -59,7 +59,7 @@ jobs:
         env:
           TZ: Asia/Seoul
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
-          FORCE_BUILD: ${{ inputs.force_build == true && '1' || '0' }}
+          FORCE_BUILD: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
 
       - name: Copy output to docs
         run: |
