@@ -624,7 +624,9 @@ _SECTOR_ALIASES = {
 
 
 def _clean_sector_name(sec: str) -> str:
-    """sector 이름 정규화: 별칭→표준, dirty→'기타'."""
+    """sector 이름 정규화: 별칭→표준, dirty→'기타'.
+    표준 카테고리/별칭 안에 없으면 무조건 '기타' (차트 라벨 깨짐 방지).
+    """
     if not sec:
         return "기타"
     sec = sec.strip()
@@ -633,14 +635,8 @@ def _clean_sector_name(sec: str) -> str:
         return _SECTOR_ALIASES[sec]
     if sec in _ALLOWED_SECTORS:
         return sec
-    # dirty 패턴
-    if len(sec) > 10:
-        return "기타"
-    if "(" in sec or ")" in sec:
-        return "기타"
-    if sec.count(" ") > 1:
-        return "기타"
-    return sec   # 짧고 단순하면 통과 (혹시 새 카테고리 일 수도)
+    # 그 외 모두 '기타' — 표준 카테고리 외 이름은 차트 깨짐/UI 일관성 문제
+    return "기타"
 
 
 def query_sector_aggregates(days_offset: int = 0, days_count: int = 1) -> list:
@@ -928,14 +924,22 @@ def _table_top_rows(rows: list, key="net_amount", desc=True, n=30) -> list:
 
 
 def _period_days(r: dict) -> int:
-    """todayygg period_start/end → 활발 매매 기간 일수."""
-    s = r.get("period_start_date", "")
-    e = r.get("period_end_date", "")
+    """todayygg period_start/end → 활발 매매 기간 일수. YYYYMMDD 또는 YYYY-MM-DD 지원."""
+    s = str(r.get("period_start_date", "") or "").strip()
+    e = str(r.get("period_end_date", "") or "").strip()
     if not s or not e:
         return 0
+
+    def _parse_date(d: str):
+        if len(d) >= 10 and d[4] == '-':
+            return dt.date.fromisoformat(d[:10])
+        if len(d) >= 8 and d[:8].isdigit():
+            return dt.date(int(d[:4]), int(d[4:6]), int(d[6:8]))
+        return dt.date.fromisoformat(d[:10])
+
     try:
-        s_d = dt.date.fromisoformat(s[:10])
-        e_d = dt.date.fromisoformat(e[:10])
+        s_d = _parse_date(s)
+        e_d = _parse_date(e)
         return (e_d - s_d).days + 1
     except Exception:
         return 0
