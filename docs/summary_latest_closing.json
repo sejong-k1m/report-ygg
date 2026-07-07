@@ -1,16 +1,16 @@
 {
-  "trade_date": "20260703",
+  "trade_date": "20260706",
   "markets": [
     "KOSPI",
     "KOSDAQ"
   ],
-  "row_count": 511,
+  "row_count": 451,
   "summaries": {
     "KOSPI": {
       "연기금": {
-        "buy": 8365570301826,
-        "sell": 8336463620569,
-        "net": 29106681257
+        "buy": 6298542108823,
+        "sell": 6393925715693,
+        "net": -95383606870
       }
     },
     "KOSDAQ": {
