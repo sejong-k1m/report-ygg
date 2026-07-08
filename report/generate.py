@@ -624,19 +624,37 @@ _SECTOR_ALIASES = {
 
 
 def _clean_sector_name(sec: str) -> str:
-    """sector 이름 정규화: 별칭→표준, dirty→'기타'.
-    표준 카테고리/별칭 안에 없으면 무조건 '기타' (차트 라벨 깨짐 방지).
-    """
+    """sector 이름 정규화: 별칭→표준, 이모지/특수문자 제거, dirty→'기타'."""
     if not sec:
         return "기타"
     sec = sec.strip()
-    # 별칭 매핑 우선
+    # 1) 별칭 매핑 우선
     if sec in _SECTOR_ALIASES:
         return _SECTOR_ALIASES[sec]
     if sec in _ALLOWED_SECTORS:
         return sec
-    # 그 외 모두 '기타' — 표준 카테고리 외 이름은 차트 깨짐/UI 일관성 문제
-    return "기타"
+    # 2) 이모지/특수문자 제거 (한글, 영문, 숫자, 공백, /, ·, - 만 허용)
+    import re
+    cleaned = re.sub(r'[^\w가-힣\s/·\-]', '', sec, flags=re.UNICODE)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    if not cleaned:
+        return "기타"
+    # 정리된 이름이 별칭/허용에 있으면 사용
+    if cleaned in _SECTOR_ALIASES:
+        return _SECTOR_ALIASES[cleaned]
+    if cleaned in _ALLOWED_SECTORS:
+        return cleaned
+    # 3) dirty 패턴 (너무 길거나 괄호 다중 공백) — '기타'
+    if len(cleaned) > 12:
+        return "기타"
+    if "(" in cleaned or ")" in cleaned:
+        return "기타"
+    if cleaned.count(" ") > 2:
+        return "기타"
+    return cleaned   # 짧고 단순한 깨끗한 이름은 그대로
+
+
+
 
 
 def query_sector_aggregates(days_offset: int = 0, days_count: int = 1) -> list:
@@ -765,6 +783,54 @@ def query_sector_stocks_for_period(days_offset: int = 0, days_count: int = 1) ->
     for sec in stocks_by_sec:
         stocks_by_sec[sec].sort(key=lambda x: x["net"], reverse=True)
     return stocks_by_sec
+
+
+def build_search_data(days: int = 90) -> dict:
+    """
+    종목별 시계열 데이터 (검색 페이지용).
+    모든 종목의 최근 N일 매매 시계열을 dict 로 압축.
+    return: {
+        stock_code: {
+            "n": stock_name,
+            "m": market,
+            "s": [{d, b, s, n, bq, sq, nq, c}, ...]   # 오래된 → 최신
+        },
+        ...
+    }
+    """
+    conn = _db_conn()
+    earliest = (dt.date.today() - dt.timedelta(days=days)).strftime("%Y%m%d")
+    rows = conn.execute("""
+        SELECT stock_code, trade_date, stock_name, market,
+               buy_amount, sell_amount, net_amount,
+               buy_qty, sell_qty, net_qty, close_price
+        FROM pension_daily_report
+        WHERE trade_date >= ?
+        ORDER BY stock_code, trade_date ASC
+    """, (earliest,)).fetchall()
+    conn.close()
+
+    by_code = {}
+    for r in rows:
+        code = r["stock_code"]
+        if code not in by_code:
+            by_code[code] = {
+                "n": r["stock_name"],
+                "m": r["market"],
+                "s": [],
+            }
+        by_code[code]["s"].append({
+            "d": r["trade_date"],
+            "b": r["buy_amount"] or 0,
+            "s": r["sell_amount"] or 0,
+            "n": r["net_amount"] or 0,
+            "bq": r["buy_qty"] or 0,
+            "sq": r["sell_qty"] or 0,
+            "nq": r["net_qty"] or 0,
+            "c": r["close_price"] or 0,
+        })
+    log.info("검색 데이터: %d 종목, 최근 %d일", len(by_code), days)
+    return by_code
 
 
 def build_theme_data(rows: list) -> dict:
@@ -1547,7 +1613,11 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
     mode_active_bulk = "active" if mode == "bulk" else ""
     mode_active_themes = "active" if mode == "themes" else ""
     mode_active_cont = "active" if mode == "continuity" else ""
+    mode_active_search = "active" if mode == "search" else ""
     auto_refresh_meta = '<meta http-equiv="refresh" content="3600">' if mode == "realtime" else ''
+
+    # 검색 페이지 데이터 (mode=='search' 일 때만 큰 페이로드)
+    search_data_json = json.dumps(build_search_data(days=90), ensure_ascii=False) if mode == "search" else "{}"
 
     # 테마 페이지 데이터 (mode=='themes' 일 때만 큰 페이로드 생성, 3개 기간)
     if mode == "themes":
@@ -1637,6 +1707,18 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
             '<div class="freshness-note">'
             '📊 sector 분류는 todayygg 응답의 업종 분류 기반. 차트의 막대를 클릭하거나 '
             '우측 표의 행을 클릭하면 하단에 해당 테마 구성 종목이 나타납니다.'
+            '</div>'
+        )
+    elif mode == "search":
+        mode_subtitle = (
+            f"🔎 기간 검색 — 종목 선택 + 기간 선택 → 그 기간의 연기금 매매 흐름 "
+            f"· 마지막 빌드: <b>{last_update_hhmm}</b>"
+        )
+        data_freshness_note = (
+            '<div class="freshness-note">'
+            '📌 우리 DB에 누적된 최근 90일 시계열 기반. '
+            '종목 검색 + 기간 프리셋 (7일 / 30일 / 전체) 로 조회. '
+            'DB 누적 기간 (며칠~수주) 안에서만 표시.'
             '</div>'
         )
     elif mode == "continuity":
@@ -2036,6 +2118,53 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   .chart-wrap {{ position: relative; height: 280px; }}
   @media (max-width: 700px) {{ .chart-wrap {{ height: 220px; }} }}
 
+  /* 검색 페이지 */
+  .search-page {{ margin-top: 8px; }}
+  .search-controls {{
+    background: white; border-radius: 8px; padding: 14px 16px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04); margin-bottom: 12px;
+  }}
+  .search-row {{ display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }}
+  .search-row:last-child {{ margin-bottom: 0; }}
+  .search-row label {{ font-size: 13px; font-weight: 600; color: #2c3e50; min-width: 44px; }}
+  .search-row input[type="text"] {{
+    flex: 1; padding: 8px 12px; border: 1px solid #d6dde3;
+    border-radius: 5px; font-size: 13px; outline: none;
+  }}
+  .search-row input[type="text"]:focus {{ border-color: #3498db; }}
+  .period-buttons {{ display: flex; gap: 6px; }}
+  .period-btn {{
+    padding: 7px 16px; border: 1px solid #d6dde3; background: white;
+    border-radius: 5px; cursor: pointer; font-size: 12px;
+    color: #7f8c8d; font-weight: 500;
+  }}
+  .period-btn:hover {{ background: #ecf0f1; }}
+  .period-btn.active {{ background: #3498db; color: white; border-color: #3498db; }}
+
+  .search-summary {{
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px;
+    margin-bottom: 12px;
+  }}
+  @media (max-width: 1000px) {{ .search-summary {{ grid-template-columns: repeat(3, 1fr); }} }}
+  @media (max-width: 600px) {{ .search-summary {{ grid-template-columns: repeat(2, 1fr); }} }}
+  .sum-card {{
+    background: white; border-radius: 6px; padding: 10px 12px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }}
+  .sum-card .label {{ font-size: 10px; color: #95a5a6; margin-bottom: 2px; }}
+  .sum-card .value {{ font-size: 15px; font-weight: 600; }}
+
+  .search-chart-section, .search-table-section {{
+    background: white; border-radius: 8px; padding: 12px 16px;
+    margin-bottom: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }}
+  .search-chart-section h2, .search-table-section h2 {{ margin-top: 0; font-size: 14px; }}
+  .search-empty {{
+    text-align: center; color: #95a5a6; padding: 40px 20px;
+    background: white; border-radius: 8px; font-size: 13px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }}
+
   /* 연속 누적 매수 페이지 */
   .continuity-page {{ margin-top: 8px; }}
   .continuity-chart-section, .continuity-table-section {{
@@ -2213,6 +2342,7 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
   <a href="bulk.html" class="{mode_active_bulk}">📦 대량매매</a>
   <a href="themes.html" class="{mode_active_themes}">🏷 테마</a>
   <a href="continuity.html" class="{mode_active_cont}">🔥 연속매수</a>
+  <a href="search.html" class="{mode_active_search}">🔎 기간검색</a>
   <button class="pdf-btn" onclick="window.print()">📥 PDF 저장</button>
 </div>
 
@@ -2424,6 +2554,60 @@ def render_html(payload: dict, mode: str = "realtime") -> str:
 </section>
 
 </div>''') if mode == 'themes' else ''}
+
+{('''<div class="search-page">
+
+<section class="search-controls">
+  <div class="search-row">
+    <label>종목:</label>
+    <input type="text" id="search-stock-input" list="search-stock-list" placeholder="종목명 또는 코드 입력 (예: 삼성전자, 005930)" autocomplete="off"/>
+    <datalist id="search-stock-list"></datalist>
+  </div>
+  <div class="search-row">
+    <label>기간:</label>
+    <div class="period-buttons">
+      <button class="period-btn active" data-days="7">7일</button>
+      <button class="period-btn" data-days="30">30일</button>
+      <button class="period-btn" data-days="90">90일 (전체)</button>
+    </div>
+  </div>
+</section>
+
+<section id="search-result-summary" class="search-summary" style="display:none;">
+  <div class="sum-card"><div class="label">종목</div><div class="value" id="sum-name">-</div></div>
+  <div class="sum-card"><div class="label">거래일</div><div class="value" id="sum-days">-</div></div>
+  <div class="sum-card"><div class="label">기간 순매수</div><div class="value" id="sum-net">-</div></div>
+  <div class="sum-card"><div class="label">총 매수</div><div class="value" id="sum-buy">-</div></div>
+  <div class="sum-card"><div class="label">총 매도</div><div class="value" id="sum-sell">-</div></div>
+  <div class="sum-card"><div class="label">추정 매수평단</div><div class="value" id="sum-avg">-</div></div>
+</section>
+
+<section id="search-chart-section" class="search-chart-section" style="display:none;">
+  <h2>📈 일별 매수/매도/순매수 흐름</h2>
+  <div class="chart-wrap" style="height: 320px;"><canvas id="search-chart"></canvas></div>
+</section>
+
+<section id="search-table-section" class="search-table-section" style="display:none;">
+  <h2>📋 일별 상세</h2>
+  <table class="sortable">
+    <thead><tr>
+      <th>날짜</th>
+      <th class="num" data-sort="num">매수</th>
+      <th class="num" data-sort="num">매도</th>
+      <th class="num" data-sort="num">순매수</th>
+      <th class="num" data-sort="num">매수주식수</th>
+      <th class="num" data-sort="num">순매수주식수</th>
+      <th class="num" data-sort="num">종가</th>
+    </tr></thead>
+    <tbody id="search-table-body"></tbody>
+  </table>
+</section>
+
+<section id="search-empty" class="search-empty">
+  <p>위에서 종목을 선택하고 기간을 고르세요.</p>
+</section>
+
+</div>''') if mode == 'search' else ''}
 
 {('''<div class="continuity-page">
 
@@ -2720,8 +2904,8 @@ document.querySelectorAll('.layer-toggles input').forEach(checkbox => {{
 
 applySectionState();
 
-// AI / bulk / themes / continuity 모드일 때 다른 섹션 숨김 (URL 기반)
-const _isSpecialPage = ['ai.html', 'bulk.html', 'themes.html', 'continuity.html'].some(
+// AI / bulk / themes / continuity / search 모드일 때 다른 섹션 숨김
+const _isSpecialPage = ['ai.html', 'bulk.html', 'themes.html', 'continuity.html', 'search.html'].some(
   p => window.location.pathname.endsWith(p)
 );
 if (_isSpecialPage) {{
@@ -2731,9 +2915,9 @@ if (_isSpecialPage) {{
   // layout-header 숨김
   const lh = document.querySelector('.layout-header');
   if (lh) lh.style.display = 'none';
-  // bulk/themes/continuity 에서는 커뮤니티 사이드바도 숨김
+  // bulk/themes/continuity/search 에서는 커뮤니티 사이드바도 숨김
   const cp = document.querySelector('.community-panel');
-  if (cp && ['bulk.html', 'themes.html', 'continuity.html'].some(p => window.location.pathname.endsWith(p))) {{
+  if (cp && ['bulk.html', 'themes.html', 'continuity.html', 'search.html'].some(p => window.location.pathname.endsWith(p))) {{
     cp.style.display = 'none';
   }}
 }}
@@ -3262,6 +3446,212 @@ searchClear.addEventListener('click', () => {{
   if (firstRow) {{
     firstRow.classList.add('selected');
     renderCard(firstRow.dataset.stockCode);
+  }}
+}})();
+
+// ============================================================
+// 검색 페이지 (search.html) — 종목별 기간 매매 흐름
+// ============================================================
+(function() {{
+  if (!window.location.pathname.endsWith('search.html')) return;
+  const searchData = {search_data_json};
+  if (!searchData || Object.keys(searchData).length === 0) return;
+
+  const input = document.getElementById('search-stock-input');
+  const datalist = document.getElementById('search-stock-list');
+  const periodBtns = document.querySelectorAll('.period-btn');
+  const summary = document.getElementById('search-result-summary');
+  const chartSec = document.getElementById('search-chart-section');
+  const tableSec = document.getElementById('search-table-section');
+  const emptyMsg = document.getElementById('search-empty');
+  const tbody = document.getElementById('search-table-body');
+
+  // datalist 채우기 (검색 자동완성)
+  const codes = Object.keys(searchData);
+  datalist.innerHTML = codes.map(c => {{
+    const d = searchData[c];
+    return `<option value="${{d.n}} (${{c}})">${{d.m || ''}}</option>`;
+  }}).join('');
+
+  let currentDays = 7;
+  let currentCode = null;
+  let chart = null;
+
+  const fmtWon = (n) => {{
+    const abs = Math.abs(n || 0);
+    const sign = n < 0 ? '-' : '';
+    if (abs >= 1e12) return sign + (abs/1e12).toFixed(1) + '조';
+    if (abs >= 1e8) return sign + (abs/1e8).toFixed(1) + '억';
+    if (abs >= 1e4) return sign + (abs/1e4).toFixed(0) + '만';
+    return sign + abs.toLocaleString() + '원';
+  }};
+  const fmtDate = (d) => (d && d.length === 8) ? `${{d.slice(4,6)}}-${{d.slice(6,8)}}` : d;
+
+  function parseInput(v) {{
+    // "삼성전자 (005930)" → "005930"
+    const m = String(v).match(/\\((\\d{{6}}|[0-9A-Z]{{6,7}})\\)/);
+    if (m) return m[1];
+    // 그냥 코드만 입력됐을 수도
+    if (/^[0-9A-Z]{{6,7}}$/.test(v.trim())) return v.trim();
+    // 종목명으로 찾기
+    const found = codes.find(c => searchData[c].n === v.trim());
+    return found || null;
+  }}
+
+  function render() {{
+    if (!currentCode || !searchData[currentCode]) {{
+      summary.style.display = 'none';
+      chartSec.style.display = 'none';
+      tableSec.style.display = 'none';
+      emptyMsg.style.display = '';
+      return;
+    }}
+    const d = searchData[currentCode];
+    // 기간 필터 (최근 N일)
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - currentDays);
+    const cutoffStr = cutoff.toISOString().slice(0, 10).replace(/-/g, '');
+    const series = (d.s || []).filter(s => s.d >= cutoffStr);
+    if (series.length === 0) {{
+      summary.style.display = 'none';
+      chartSec.style.display = 'none';
+      tableSec.style.display = 'none';
+      emptyMsg.style.display = '';
+      emptyMsg.innerHTML = `<p>${{d.n}} (${{currentCode}}) — 최근 ${{currentDays}}일 데이터 없음.</p>`;
+      return;
+    }}
+
+    // 요약
+    let totalBuy = 0, totalSell = 0, totalNet = 0;
+    let totalBuyQty = 0;
+    for (const s of series) {{
+      totalBuy += s.b || 0;
+      totalSell += s.s || 0;
+      totalNet += s.n || 0;
+      totalBuyQty += s.bq || 0;
+    }}
+    const avgBuyPrice = totalBuyQty > 0 ? Math.round(totalBuy / totalBuyQty) : 0;
+
+    document.getElementById('sum-name').textContent = `${{d.n}} (${{currentCode}})`;
+    document.getElementById('sum-days').textContent = `${{series.length}}일`;
+    const sumNet = document.getElementById('sum-net');
+    sumNet.textContent = (totalNet >= 0 ? '+' : '') + fmtWon(totalNet);
+    sumNet.className = 'value ' + (totalNet >= 0 ? 'pos' : 'neg');
+    document.getElementById('sum-buy').textContent = fmtWon(totalBuy);
+    document.getElementById('sum-sell').textContent = fmtWon(totalSell);
+    document.getElementById('sum-avg').textContent = avgBuyPrice > 0 ? avgBuyPrice.toLocaleString() + '원' : '-';
+
+    summary.style.display = '';
+    chartSec.style.display = '';
+    tableSec.style.display = '';
+    emptyMsg.style.display = 'none';
+
+    // 차트
+    if (chart) {{ chart.destroy(); chart = null; }}
+    const ctx = document.getElementById('search-chart');
+    if (ctx && typeof Chart !== 'undefined') {{
+      chart = new Chart(ctx, {{
+        type: 'bar',
+        data: {{
+          labels: series.map(s => fmtDate(s.d)),
+          datasets: [
+            {{
+              label: '매수 (억)',
+              data: series.map(s => Math.round((s.b || 0)/1e8 * 10)/10),
+              backgroundColor: 'rgba(231, 76, 60, 0.7)',
+              borderColor: '#c0392b', borderWidth: 1, order: 2,
+            }},
+            {{
+              label: '매도 (억)',
+              data: series.map(s => Math.round((s.s || 0)/1e8 * 10)/10),
+              backgroundColor: 'rgba(52, 152, 219, 0.7)',
+              borderColor: '#2980b9', borderWidth: 1, order: 2,
+            }},
+            {{
+              label: '순매수',
+              type: 'line',
+              data: series.map(s => Math.round((s.n || 0)/1e8 * 10)/10),
+              borderColor: '#16a085', backgroundColor: 'rgba(22, 160, 133, 0.15)',
+              borderWidth: 2, tension: 0.25, pointRadius: 4, fill: false, order: 1,
+            }},
+          ],
+        }},
+        options: {{
+          responsive: true, maintainAspectRatio: false,
+          interaction: {{ mode: 'index', intersect: false }},
+          plugins: {{
+            legend: {{ position: 'bottom' }},
+            tooltip: {{
+              callbacks: {{
+                label: c => `${{c.dataset.label}}: ${{c.parsed.y.toLocaleString()}}억`,
+              }},
+            }},
+          }},
+          scales: {{
+            y: {{ ticks: {{ callback: v => v.toLocaleString() + '억' }} }},
+            x: {{ grid: {{ display: false }} }},
+          }},
+        }},
+      }});
+    }}
+
+    // 표 (최신 → 오래된 순으로 표시)
+    const sortedDesc = [...series].reverse();
+    tbody.innerHTML = sortedDesc.map(s => {{
+      const netCls = (s.n || 0) >= 0 ? 'pos' : 'neg';
+      const nqCls = (s.nq || 0) >= 0 ? 'pos' : 'neg';
+      return `
+        <tr>
+          <td>${{fmtDate(s.d)}}</td>
+          <td class="num" data-value="${{s.b || 0}}">${{fmtWon(s.b || 0)}}</td>
+          <td class="num" data-value="${{s.s || 0}}">${{fmtWon(s.s || 0)}}</td>
+          <td class="num ${{netCls}}" data-value="${{s.n || 0}}">${{fmtWon(s.n || 0)}}</td>
+          <td class="num" data-value="${{s.bq || 0}}">${{(s.bq || 0).toLocaleString()}}주</td>
+          <td class="num ${{nqCls}}" data-value="${{s.nq || 0}}">${{(s.nq || 0).toLocaleString()}}주</td>
+          <td class="num" data-value="${{s.c || 0}}">${{s.c > 0 ? (s.c).toLocaleString() : '-'}}</td>
+        </tr>
+      `;
+    }}).join('');
+  }}
+
+  // 이벤트 핸들러
+  input.addEventListener('input', () => {{
+    const code = parseInput(input.value);
+    if (code && searchData[code]) {{
+      currentCode = code;
+      render();
+    }}
+  }});
+  input.addEventListener('change', () => {{
+    const code = parseInput(input.value);
+    currentCode = (code && searchData[code]) ? code : null;
+    render();
+  }});
+  periodBtns.forEach(btn => {{
+    btn.addEventListener('click', () => {{
+      periodBtns.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentDays = parseInt(btn.dataset.days, 10);
+      render();
+    }});
+  }});
+
+  // URL 파라미터 지원 (?code=005930&days=30)
+  const params = new URLSearchParams(window.location.search);
+  const initCode = params.get('code');
+  const initDays = params.get('days');
+  if (initDays) {{
+    const btn = document.querySelector(`.period-btn[data-days="${{initDays}}"]`);
+    if (btn) {{
+      periodBtns.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentDays = parseInt(initDays, 10);
+    }}
+  }}
+  if (initCode && searchData[initCode]) {{
+    currentCode = initCode;
+    input.value = `${{searchData[initCode].n}} (${{initCode}})`;
+    render();
   }}
 }})();
 
@@ -3886,6 +4276,11 @@ def main():
         cont_html_out = render_html(payload, mode="continuity")
         (OUTPUT_DIR / "continuity.html").write_text(cont_html_out, encoding="utf-8")
         log.info("HTML written (continuity): %s", OUTPUT_DIR / "continuity.html")
+
+        # search.html — 종목별 기간 매매 흐름 (DB 90일 시계열)
+        search_html_out = render_html(payload, mode="search")
+        (OUTPUT_DIR / "search.html").write_text(search_html_out, encoding="utf-8")
+        log.info("HTML written (search): %s", OUTPUT_DIR / "search.html")
 
         # closing.html — 별도 fetch (trading-trend 머지 X) 로 직전 영업일 마감 데이터
         log.info("closing 데이터 별도 fetch (trading-trend 제외)...")
