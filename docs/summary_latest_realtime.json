@@ -4,21 +4,9 @@
     "KOSPI",
     "KOSDAQ"
   ],
-  "row_count": 432,
+  "row_count": 0,
   "summaries": {
-    "KOSPI": {
-      "연기금": {
-        "buy": 4273360277959,
-        "sell": 4415410352069,
-        "net": -142050074110
-      }
-    },
-    "KOSDAQ": {
-      "연기금": {
-        "buy": 0,
-        "sell": 0,
-        "net": 0
-      }
-    }
+    "KOSPI": {},
+    "KOSDAQ": {}
   }
 }
