@@ -603,7 +603,7 @@
 
 <div class="mode-subtitle">📊 마감 기준 — <b>20260819</b> 마감 데이터</div>
 <div class="freshness-note">📌 오늘 마감 데이터는 16시 이후 자동 갱신됩니다. 현재는 20260819 기준 데이터.</div>
-<div class="meta">기준일자: <b>20260819</b> &nbsp;|&nbsp; 생성: 2026-10-15 22:56:07 &nbsp;|&nbsp; 출처: KRX 공개 데이터</div>
+<div class="meta">기준일자: <b>20260819</b> &nbsp;|&nbsp; 생성: 2026-10-15 23:06:25 &nbsp;|&nbsp; 출처: KRX 공개 데이터</div>
 
 <div class="layer-toggles">
   <span class="lt-label">표시:</span>
@@ -648,7 +648,7 @@
     <h2>📅 최근 7거래일 (KOSPI)</h2>
     <table>
       <thead><tr><th>일자</th><th class="num">매수</th><th class="num">매도</th><th class="num">순매수</th></tr></thead>
-      <tbody><tr><td>20261015</td><td class='num'>39,748.7억</td><td class='num'>41,171.3억</td><td class='num neg'>-1,422.6억</td></tr><tr><td>20261014</td><td class='num'>34,485.1억</td><td class='num'>34,561.0억</td><td class='num neg'>-75.9억</td></tr><tr><td>20261013</td><td class='num'>45,959.1억</td><td class='num'>45,748.3억</td><td class='num pos'>210.8억</td></tr><tr><td>20261012</td><td class='num'>36,163.1억</td><td class='num'>35,258.3억</td><td class='num pos'>904.8억</td></tr><tr><td>20261008</td><td class='num'>36,768.5억</td><td class='num'>36,341.9억</td><td class='num pos'>426.6억</td></tr><tr><td>20261007</td><td class='num'>32,867.0억</td><td class='num'>35,830.4억</td><td class='num neg'>-2,963.4억</td></tr><tr><td>20261006</td><td class='num'>30,659.0억</td><td class='num'>31,367.8억</td><td class='num neg'>-708.8억</td></tr></tbody>
+      <tbody><tr><td>20261015</td><td class='num'>39,747.6억</td><td class='num'>41,206.5억</td><td class='num neg'>-1,458.9억</td></tr><tr><td>20261014</td><td class='num'>34,485.1억</td><td class='num'>34,561.0억</td><td class='num neg'>-75.9억</td></tr><tr><td>20261013</td><td class='num'>45,959.1억</td><td class='num'>45,748.3억</td><td class='num pos'>210.8억</td></tr><tr><td>20261012</td><td class='num'>36,163.1억</td><td class='num'>35,258.3억</td><td class='num pos'>904.8억</td></tr><tr><td>20261008</td><td class='num'>36,768.5억</td><td class='num'>36,341.9억</td><td class='num pos'>426.6억</td></tr><tr><td>20261007</td><td class='num'>32,867.0억</td><td class='num'>35,830.4억</td><td class='num neg'>-2,963.4억</td></tr><tr><td>20261006</td><td class='num'>30,659.0억</td><td class='num'>31,367.8억</td><td class='num neg'>-708.8억</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -1364,7 +1364,7 @@ searchClear.addEventListener('click', () => {
 (function() {
   const ctx = document.getElementById('weekly-chart');
   if (!ctx || typeof Chart === 'undefined') return;
-  const data = [{"date": "1006", "buy": 30659.0, "sell": 31367.8, "net": -708.8}, {"date": "1007", "buy": 32867.0, "sell": 35830.4, "net": -2963.4}, {"date": "1008", "buy": 36768.5, "sell": 36341.9, "net": 426.6}, {"date": "1012", "buy": 36163.1, "sell": 35258.3, "net": 904.8}, {"date": "1013", "buy": 45959.1, "sell": 45748.3, "net": 210.8}, {"date": "1014", "buy": 34485.1, "sell": 34561.0, "net": -75.9}, {"date": "1015", "buy": 39748.7, "sell": 41171.3, "net": -1422.6}];
+  const data = [{"date": "1006", "buy": 30659.0, "sell": 31367.8, "net": -708.8}, {"date": "1007", "buy": 32867.0, "sell": 35830.4, "net": -2963.4}, {"date": "1008", "buy": 36768.5, "sell": 36341.9, "net": 426.6}, {"date": "1012", "buy": 36163.1, "sell": 35258.3, "net": 904.8}, {"date": "1013", "buy": 45959.1, "sell": 45748.3, "net": 210.8}, {"date": "1014", "buy": 34485.1, "sell": 34561.0, "net": -75.9}, {"date": "1015", "buy": 39747.6, "sell": 41206.5, "net": -1458.9}];
   if (!data || data.length === 0) return;
   new Chart(ctx, {
     type: 'bar',
